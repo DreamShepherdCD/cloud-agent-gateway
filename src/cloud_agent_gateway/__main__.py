@@ -21,7 +21,9 @@ if __name__ == "__main__":
         from cloud_agent_gateway.binding_prompt import inject_binding_skill
 
         home = os.path.expanduser("~/.nanobot")
-        skills_dir = os.path.join(home, "skills")
+        # nanobot's SkillsLoader loads from {workspace}/skills/
+        # default workspace = ~/.nanobot/workspace/
+        skills_dir = os.path.join(home, "workspace", "skills")
         inject_binding_skill(skills_dir)
         print(f"[cloud-agent-gateway] channel-binding skill injected → {os.path.join(skills_dir, 'channel-binding')}")
     except Exception:
