@@ -44,6 +44,12 @@ if _cloud_dir not in sys.path:
     sys.path.insert(0, _cloud_dir)
 
 from cloud_agent_gateway.platforms import platform as _platform
+from cloud_agent_gateway.channel_binding import (
+    bind_status,
+    dingtalk_bind,
+    wechat_check_status,
+    wechat_fetch_qr,
+)
 
 
 def _log(msg: str) -> None:
@@ -613,6 +619,52 @@ def _check_owner(username: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Channel binding routes (internal: called by nanobot agent)
+# ═══════════════════════════════════════════════════════════════════
+
+
+async def _bind_wechat_qr(request: Request) -> Response:
+    """POST /api/bind/wechat/qr — agent 调用，获取微信二维码"""
+    _check_internal(request)
+    data = await wechat_fetch_qr()
+    return Response(json.dumps(data, ensure_ascii=False), media_type="application/json")
+
+
+async def _bind_wechat_status(request: Request) -> Response:
+    """GET /api/bind/wechat/status?qrcode=xxx — agent 轮询扫码状态"""
+    _check_internal(request)
+    qid = request.query_params.get("qrcode", "")
+    if not qid:
+        return Response(json.dumps({"error": "missing qrcode"}), media_type="application/json", status_code=400)
+    data = await wechat_check_status(qid)
+    return Response(json.dumps(data, ensure_ascii=False), media_type="application/json")
+
+
+async def _bind_dingtalk(request: Request) -> Response:
+    """POST /api/bind/dingtalk — agent 调用，写入钉钉凭证"""
+    _check_internal(request)
+    try:
+        body = json.loads(await request.body())
+    except Exception:
+        return Response(json.dumps({"error": "invalid JSON"}), media_type="application/json", status_code=400)
+    data = await dingtalk_bind(body.get("client_id", ""), body.get("client_secret", ""))
+    return Response(json.dumps(data, ensure_ascii=False), media_type="application/json")
+
+
+async def _bind_status(request: Request) -> Response:
+    """GET /api/bind/status — agent 查询绑定状态"""
+    _check_internal(request)
+    return Response(json.dumps(bind_status(), ensure_ascii=False), media_type="application/json")
+
+
+def _check_internal(request: Request) -> None:
+    """仅允许 localhost 内部调用。"""
+    host = request.client.host if request.client else ""
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Routes
 # ═══════════════════════════════════════════════════════════════════
 
@@ -622,6 +674,10 @@ app.router.add_route(CALLBACK_PATH, callback, methods=["GET"])
 app.router.add_route("/auth/callback", callback, methods=["GET"])
 app.router.add_route("/login/callback", callback, methods=["GET"])
 app.router.add_route("/health", health, methods=["GET"])
+app.router.add_route("/api/bind/wechat/qr", _bind_wechat_qr, methods=["POST"])
+app.router.add_route("/api/bind/wechat/status", _bind_wechat_status, methods=["GET"])
+app.router.add_route("/api/bind/dingtalk", _bind_dingtalk, methods=["POST"])
+app.router.add_route("/api/bind/status", _bind_status, methods=["GET"])
 app.router.add_route("/{path:path}", http_proxy, methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 app.router.add_websocket_route("/{path:path}", ws_proxy)
 
