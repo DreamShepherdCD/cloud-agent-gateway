@@ -16,4 +16,15 @@ import sys
 from cloud_agent_gateway.oauth_proxy import main
 
 if __name__ == "__main__":
+    # ── Inject channel-binding skill for the agent ──
+    try:
+        from cloud_agent_gateway.binding_prompt import inject_binding_skill
+
+        home = os.path.expanduser("~/.nanobot")
+        skills_dir = os.path.join(home, "skills")
+        inject_binding_skill(skills_dir)
+        print(f"[cloud-agent-gateway] channel-binding skill injected → {os.path.join(skills_dir, 'channel-binding')}")
+    except Exception:
+        pass  # safe to skip if nanobot not installed yet
+
     main()
