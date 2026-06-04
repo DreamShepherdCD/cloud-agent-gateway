@@ -145,9 +145,17 @@ window.WebSocket.CONNECTING=_W.CONNECTING;
 window.WebSocket.OPEN=_W.OPEN;
 window.WebSocket.CLOSING=_W.CLOSING;
 window.WebSocket.CLOSED=_W.CLOSED;
-// auto-reload 10s after login to reveal injected welcome chat
-var __nbr=localStorage.getItem('_nb_welcome');
-if(!__nbr){localStorage.setItem('_nb_welcome','1');setTimeout(function(){window.location.reload();},10000);}}
+// click "New Chat" button after page loads, so the WebUI auto-selects it
+// proxy will inject binding greeting into this chat via WS
+setTimeout(function(){
+  var btns=document.querySelectorAll('button[aria-label]');
+  for(var i=0;i<btns.length;i++){
+    var a=btns[i].getAttribute('aria-label')||'';
+    if(a.includes('Chat')||a.includes('对话')||a.includes('chat')){
+      btns[i].click();break;
+    }
+  }
+},2500);}
  })();</script>
 """
 
@@ -596,13 +604,13 @@ async def ws_proxy(websocket: WebSocket) -> None:
                 nonlocal current_chat_id
                 _log(f"WS injection: coroutine started (username={username})")
                 try:
-                    # Phase 1: try to get chat_id from client
+                    # Phase 1: try to get chat_id from client (JS auto-clicks New Chat)
                     try:
-                        await asyncio.wait_for(have_chat_id.wait(), timeout=3)
+                        await asyncio.wait_for(have_chat_id.wait(), timeout=6)
                         await asyncio.sleep(0.3)
                         _log(f"WS injection: got chat_id from client (cid={current_chat_id[:12] if current_chat_id else '?'})")
                     except asyncio.TimeoutError:
-                        _log(f"WS injection: client didn't create chat in 3s, will create one")
+                        _log(f"WS injection: client didn't create chat in 6s, will create one")
 
                     if not current_chat_id:
                         # Client hasn't created a chat — create one by injecting
@@ -634,14 +642,6 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         }
                         await upstream.send(json.dumps(envelope))
                         _log(f"WS → neo: injected binding greeting (cid={current_chat_id[:12]})")
-                        # Wait for agent to finish, then notify client to refresh sidebar
-                        await asyncio.sleep(6)
-                        await websocket.send_text(json.dumps({
-                            "event": "session_updated",
-                            "chat_id": current_chat_id,
-                            "scope": "metadata",
-                        }))
-                        _log(f"WS → client: session_updated to show chat in sidebar")
                 except Exception as exc:
                     _log(f"WS injection error: {exc}")
 
