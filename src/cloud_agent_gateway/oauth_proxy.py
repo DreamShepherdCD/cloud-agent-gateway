@@ -589,12 +589,8 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             async def inject_binding_greeting():
-                """After upstream connects, create a new chat and inject binding prompt.
-
-                Strategy: wait for client activity OR timeout (3s), then inject.
-                - If client sends `new_chat` → chat_id comes from `attached` event
-                - If client sends nothing → create a brand-new chat via message injection
-                """
+                """After upstream connects, create a new chat and inject binding prompt."""
+                _log(f"WS injection: coroutine started (username={username})")
                 try:
                     # Phase 1: try to get chat_id from client
                     try:
