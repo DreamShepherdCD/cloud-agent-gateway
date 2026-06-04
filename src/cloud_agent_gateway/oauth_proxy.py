@@ -560,7 +560,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             # ── Per-session state for binding prompt injection ──
-            chat_created = asyncio.Event()
+            have_chat_id = asyncio.Event()
             current_chat_id: str | None = None
 
             async def u2c():
@@ -576,7 +576,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                                     cid = ev.get("chat_id")
                                     if cid:
                                         current_chat_id = cid
-                                        chat_created.set()
+                                        have_chat_id.set()
                                 _log(f"WS ← neo: {ev.get('event', ev.get('type','?'))}")
                             except Exception:
                                 _log(f"WS ← neo: raw {data[:60]}")
@@ -589,10 +589,36 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             async def inject_binding_greeting():
-                """After client creates chat, inject binding prompt."""
+                """After upstream connects, create a new chat and inject binding prompt.
+
+                Strategy: wait for client activity OR timeout (3s), then inject.
+                - If client sends `new_chat` → chat_id comes from `attached` event
+                - If client sends nothing → create a brand-new chat via message injection
+                """
                 try:
-                    await asyncio.wait_for(chat_created.wait(), timeout=10)
-                    await asyncio.sleep(0.5)
+                    # Phase 1: try to get chat_id from client
+                    try:
+                        await asyncio.wait_for(have_chat_id.wait(), timeout=3)
+                        await asyncio.sleep(0.3)
+                        _log(f"WS injection: got chat_id from client (cid={current_chat_id[:12] if current_chat_id else '?'})")
+                    except asyncio.TimeoutError:
+                        _log(f"WS injection: client didn't create chat in 3s, will create one")
+
+                    if not current_chat_id:
+                        # Client hasn't created a chat — create one by injecting
+                        # a new_chat command, then the message
+                        new_cid = str(uuid.uuid4())
+                        # First, create the chat
+                        await upstream.send(json.dumps({
+                            "type": "new_chat",
+                            "chat_id": new_cid,
+                            "sender_id": f"oauth:{username}",
+                            "sender_name": username,
+                        }))
+                        await asyncio.sleep(0.3)
+                        current_chat_id = new_cid
+                        _log(f"WS → neo: created new chat {new_cid[:12]}")
+
                     if current_chat_id:
                         envelope = {
                             "type": "message",
@@ -608,8 +634,6 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         }
                         await upstream.send(json.dumps(envelope))
                         _log(f"WS → neo: injected binding greeting (cid={current_chat_id[:12]})")
-                except asyncio.TimeoutError:
-                    pass  # client didn't create a chat within 10s
                 except Exception as exc:
                     _log(f"WS injection error: {exc}")
 
