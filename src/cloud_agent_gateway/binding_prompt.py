@@ -17,7 +17,13 @@ and the conversation flow. Internal security is handled by the HTTP routes
 # Skill definition (Markdown for nanobot skill system)
 # ═══════════════════════════════════════════════════════════════
 
-BINDING_SKILL_MD = """# Channel Binding
+BINDING_SKILL_MD = """---
+name: channel-binding
+description: Guide user to bind WeChat/DingTalk/Discord/Telegram/MQTT channel from Space WebUI.
+always: true
+---
+
+# Channel Binding
 
 Bind WeChat (weixin) / DingTalk (dingtalk) channels for this agent.
 
