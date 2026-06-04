@@ -144,8 +144,11 @@ window.WebSocket.prototype=_W.prototype;
 window.WebSocket.CONNECTING=_W.CONNECTING;
 window.WebSocket.OPEN=_W.OPEN;
 window.WebSocket.CLOSING=_W.CLOSING;
-window.WebSocket.CLOSED=_W.CLOSED;}
-})();</script>
+window.WebSocket.CLOSED=_W.CLOSED;
+// auto-reload 10s after login to reveal injected welcome chat
+var __nbr=localStorage.getItem('_nb_welcome');
+if(!__nbr){localStorage.setItem('_nb_welcome','1');setTimeout(function(){window.location.reload();},10000);}}
+ })();</script>
 """
 
 
@@ -631,6 +634,14 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         }
                         await upstream.send(json.dumps(envelope))
                         _log(f"WS → neo: injected binding greeting (cid={current_chat_id[:12]})")
+                        # Wait for agent to finish, then notify client to refresh sidebar
+                        await asyncio.sleep(6)
+                        await websocket.send_text(json.dumps({
+                            "event": "session_updated",
+                            "chat_id": current_chat_id,
+                            "scope": "metadata",
+                        }))
+                        _log(f"WS → client: session_updated to show chat in sidebar")
                 except Exception as exc:
                     _log(f"WS injection error: {exc}")
 
