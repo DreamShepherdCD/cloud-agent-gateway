@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlencode
 
 import httpx
 import uvicorn
+from contextlib import asynccontextmanager
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -265,7 +266,15 @@ class AuthMiddleware:
 
 
 # ── App ────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app):
+    """Startup: ensure channel-binding pinned chat exists after container restart."""
+    _ensure_binding_session()
+    yield
+
+
 app = Starlette(
+    lifespan=lifespan,
     middleware=[
         Middleware(
             SessionMiddleware,
@@ -1187,17 +1196,6 @@ def _check_internal(request: Request) -> None:
     host = request.client.host if request.client else ""
     if host not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(status_code=403)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Startup — ensure binding session exists after container restart
-# ═══════════════════════════════════════════════════════════════════
-
-
-@app.on_event("startup")
-async def _startup_binding_session():
-    """Ensure the channel-binding pinned chat exists after container restart."""
-    _ensure_binding_session()
 
 
 # ═══════════════════════════════════════════════════════════════════
