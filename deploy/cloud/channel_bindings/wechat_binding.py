@@ -15,7 +15,7 @@ import os
 
 import httpx
 import qrcode
-from nanobot.channels.weixin import WeixinChannel, WeixinConfig
+from cloud_agent_gateway.adapters.nanobot_weixin import WeixinChannel, WeixinConfig
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
