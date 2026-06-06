@@ -35,7 +35,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -45,12 +45,10 @@ if _cloud_dir not in sys.path:
     sys.path.insert(0, _cloud_dir)
 
 from cloud_agent_gateway.platforms import platform as _platform
-from cloud_agent_gateway.channel_binding import (
-    bind_status,
-    dingtalk_bind,
-    wechat_check_status,
-    wechat_fetch_qr,
-)
+from cloud_agent_gateway.channel_binding import bind_status, discover
+
+# Discover channel bindings at module load (triggers import of deploy-layer modules)
+_bindings = discover()
 
 
 def _log(msg: str) -> None:
@@ -69,8 +67,10 @@ PLATFORM = _platform
 LOGIN_PATH = getattr(PLATFORM, "login_route_path", "/login")
 LOGIN_START_PATH = "/auth/start"
 CALLBACK_PATH = getattr(PLATFORM, "callback_route_path", "/auth/callback")
-AUTH_PROVIDER = getattr(PLATFORM, "auth_provider", "huggingface")
-_log(f"platform={PLATFORM.name}  upstream=:{NANOBOT_WS_PORT}")
+AUTH_PROVIDER = getattr(PLATFORM, "auth_provider", "HuggingFace")
+RELAY_TOKEN = os.environ.get("SQUAD_RELAY_TOKEN", "").strip()
+RELAY_TIMEOUT = int(os.environ.get("SQUAD_RELAY_TIMEOUT", "120"))
+_log(f"platform={PLATFORM.name}  upstream=:{NANOBOT_WS_PORT}  relay={'✓' if RELAY_TOKEN else '✗'}")
 
 # Cookie settings (kept for HF Spaces; MS uses token-in-URL instead)
 if PLATFORM.name == "modelscope":
@@ -145,18 +145,7 @@ window.WebSocket.CONNECTING=_W.CONNECTING;
 window.WebSocket.OPEN=_W.OPEN;
 window.WebSocket.CLOSING=_W.CLOSING;
 window.WebSocket.CLOSED=_W.CLOSED;
-// click "New Chat" button after page loads, so the WebUI auto-selects it
-// proxy will inject binding greeting into this chat via WS
-setTimeout(function(){
-  var btns=document.querySelectorAll('button[aria-label]');
-  for(var i=0;i<btns.length;i++){
-    var a=btns[i].getAttribute('aria-label')||'';
-    if(a.includes('Chat')||a.includes('对话')||a.includes('chat')){
-      btns[i].click();break;
-    }
-  }
-},2500);}
- })();</script>
+} })();</script>
 """
 
 
@@ -201,9 +190,9 @@ p { color:#999; margin-bottom:2rem; font-size:0.95rem; }
 <body>
 <div class="card">
 <h1>🔐 登录</h1>
-<p>使用 """ + AUTH_PROVIDER.title() + """ 账号登录以使用 AI 助手</p>
+<p>使用 """ + AUTH_PROVIDER + """ 账号登录以使用 AI 助手</p>
 <button class="btn" onclick="location.href='""" + LOGIN_START_PATH + """'">
-  用 """ + AUTH_PROVIDER.title() + """ 登录
+  用 """ + AUTH_PROVIDER + """ 登录
 </button>
 </div>
 </body>
@@ -214,9 +203,15 @@ p { color:#999; margin-bottom:2rem; font-size:0.95rem; }
 # Auth middleware — check token (URL), then session (cookie)
 # ═══════════════════════════════════════════════════════════════════
 
-AUTH_FREE = {LOGIN_PATH, LOGIN_START_PATH, CALLBACK_PATH,
-             "/auth/callback", "/login/callback",
-             "/health", "/-/health"}
+_AUTH_FREE = {LOGIN_PATH, LOGIN_START_PATH, CALLBACK_PATH,
+              "/auth/callback", "/login/callback",
+              "/health", "/-/health",
+               "/api/squad/relay"}
+for _b in _bindings:
+    _AUTH_FREE.add(f"/bind/{_b.name}")
+    for _path_suffix, _method, _handler in _b.public_routes:
+        _AUTH_FREE.add(f"/bind/{_b.name}{_path_suffix}")
+AUTH_FREE = _AUTH_FREE
 
 
 class AuthMiddleware:
@@ -333,6 +328,153 @@ async def login_start(request: Request) -> RedirectResponse:
     return RedirectResponse(auth_url, status_code=302)
 
 
+BINDING_TITLE = "社交通道配置提示"
+
+_rows = "\n".join(
+    f"| {b.icon} {b.display} | [绑定{b.display}](/bind/{b.name}) |"
+    for b in _bindings
+)
+BINDING_CHAT_CONTENT = f"""\
+# 📱 社交通道配置
+
+将 nanobot 连接到社交通道，随时随地对话。
+
+| 通道 | 操作 |
+|------|------|
+{_rows}
+
+👆 点击上方链接即可操作，无需在此聊天。"""
+
+
+def _get_binding_chat_id() -> str | None:
+    """Return the binding chat ID from sidebar-state, or None."""
+    _data_root = os.environ.get("DATA_ROOT", "/data")
+    _sidebar_path = f"{_data_root}/instances/default/webui/sidebar-state.json"
+    _sessions_dir = f"{_data_root}/instances/sessions"
+    try:
+        with open(_sidebar_path) as _f:
+            _state = json.load(_f) or {}
+        for _pk in _state.get("pinned_keys", []):
+            if not isinstance(_pk, str) or not _pk.startswith("websocket:"):
+                continue
+            _cid = _pk.split(":", 1)[1]
+            _sp = f"{_sessions_dir}/websocket_{_cid}.jsonl"
+            if os.path.exists(_sp):
+                with open(_sp) as _sf:
+                    _first = json.loads(_sf.readline())
+                if _first.get("metadata", {}).get("title") == BINDING_TITLE:
+                    return _cid
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_binding_session():
+    """Pre-create the binding chat session + pin so sidebar shows it on first load.
+
+    Called from OAuth callback (before the page loads) and from setup_title()
+    (after WebSocket connects). Idempotent — only creates if no pinned binding
+    chat exists.
+    """
+    import os as _os, json as _json, uuid as _uuid, time as _time
+
+    _data_root = _os.environ.get("DATA_ROOT", "/data")
+    _sessions_dir = f"{_data_root}/instances/sessions"
+    _webui_dir = f"{_data_root}/instances/default/webui"
+    _sidebar_path = f"{_webui_dir}/sidebar-state.json"
+    _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+
+    # Check if a pinned binding chat already exists
+    if _os.path.exists(_sidebar_path):
+        try:
+            with open(_sidebar_path) as _f:
+                _state = _json.load(_f) or {}
+            for _pk in list(_state.get("pinned_keys", [])):
+                if not isinstance(_pk, str) or not _pk.startswith("websocket:"):
+                    continue
+                _cid = _pk.split(":", 1)[1]
+                _sp = f"{_sessions_dir}/websocket_{_cid}.jsonl"
+                if _os.path.exists(_sp):
+                    try:
+                        with open(_sp) as _sf:
+                            _first = _json.loads(_sf.readline())
+                        if _first.get("metadata", {}).get("title") == BINDING_TITLE:
+                            # Existing binding chat found → delete and recreate
+                            # to ensure content is fresh (avoids Neo caching issues)
+                            _os.unlink(_sp)
+                            # Also delete the WebUI transcript file
+                            _tp = f"{_webui_dir}/websocket_{_cid}.jsonl"
+                            if _os.path.exists(_tp):
+                                try:
+                                    _os.unlink(_tp)
+                                except Exception:
+                                    pass
+                            _state["pinned_keys"].remove(_pk)
+                            _state["updated_at"] = _now
+                            with open(_sidebar_path, "w") as _f:
+                                _json.dump(_state, _f, ensure_ascii=False, indent=2)
+                                _f.write("\n")
+                            _log(f"deleted old binding session (cid={_cid[:12]}) → will recreate")
+                            break  # stop searching, will fall through to create new one
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        except Exception:
+            pass
+
+    # Create a new binding chat
+    _cid = str(_uuid.uuid4())
+    _key = f"websocket:{_cid}"
+    _fpath = f"{_sessions_dir}/websocket_{_cid}.jsonl"
+    _os.makedirs(_sessions_dir, exist_ok=True)
+
+    with open(_fpath, "w") as _f:
+        _f.write(_json.dumps({
+            "_type": "metadata", "key": _key,
+            "created_at": _now, "updated_at": _now,
+            "metadata": {"title": BINDING_TITLE, "webui": True},
+            "last_consolidated": 0,
+        }, ensure_ascii=False) + "\n")
+        _f.write(_json.dumps({
+            "role": "user", "content": BINDING_CHAT_CONTENT,
+            "timestamp": _now,
+        }, ensure_ascii=False) + "\n")
+
+    # Also write the WebUI transcript file so Neo's API returns content.
+    # The WebUI reads from {data_dir}/webui/ (not {sessions_dir}).
+    _tpath = f"{_webui_dir}/websocket_{_cid}.jsonl"
+    with open(_tpath, "w") as _tf:
+        _tf.write(_json.dumps({
+            "event": "delta", "text": BINDING_CHAT_CONTENT, "chat_id": _cid,
+        }, ensure_ascii=False) + "\n")
+        _tf.write(_json.dumps({
+            "event": "stream_end", "text": BINDING_CHAT_CONTENT, "chat_id": _cid,
+        }, ensure_ascii=False) + "\n")
+        _tf.write(_json.dumps({
+            "event": "turn_end", "chat_id": _cid,
+        }, ensure_ascii=False) + "\n")
+
+    # Pin it
+    _os.makedirs(_webui_dir, exist_ok=True)
+    _sidebar_state = {}
+    if _os.path.exists(_sidebar_path):
+        try:
+            with open(_sidebar_path) as _f:
+                _sidebar_state = _json.load(_f) or {}
+        except Exception:
+            pass
+
+    _sidebar_state.setdefault("pinned_keys", []).insert(0, _key)
+    _sidebar_state["updated_at"] = _now
+    _sidebar_state.setdefault("schema_version", 1)
+    with open(_sidebar_path, "w") as _f:
+        _json.dump(_sidebar_state, _f, ensure_ascii=False, indent=2)
+        _f.write("\n")
+
+    _log(f"pre-created binding session + pin (cid={_cid[:12]})")
+
+
 async def callback(request: Request) -> Response:
     """Exchange code for userinfo, generate token, redirect to /?nbtoken=TOKEN."""
     token_data = await PLATFORM.exchange_token(request)
@@ -358,6 +500,13 @@ async def callback(request: Request) -> Response:
             status_code=403,
         )
 
+    # Pre-create binding chat before redirect so sidebar pin is visible
+    # on first page load (avoids needing a refresh to see the pin).
+    try:
+        _ensure_binding_session()
+    except Exception as exc:
+        _log(f"pre-create binding session failed: {exc}")
+
     # Generate token, set session (for HF), redirect with token
     nbtoken = _generate_token(username)
     try:
@@ -369,6 +518,167 @@ async def callback(request: Request) -> Response:
         pass  # session may not be available
 
     return RedirectResponse(f"/?nbtoken={nbtoken}", status_code=302)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Squad relay (single-agent mode)
+# ═══════════════════════════════════════════════════════════════════
+
+
+async def squad_relay(request: Request) -> Response:
+    """POST /api/squad/relay — single-agent relay via WebSocket.
+
+    Connects to the nanobot gateway WebSocket, sends the user message,
+    collects the agent's text response, and returns it as JSON.
+    """
+    import websockets as ws_lib
+
+    # Auth
+    auth_header = request.headers.get("X-Squad-Token", "")
+    if not RELAY_TOKEN or auth_header != RELAY_TOKEN:
+        return JSONResponse(
+            {"status": "unauthorized",
+             "error": "invalid or missing X-Squad-Token"}, status_code=401)
+
+    # Parse JSON body
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"status": "bad_request", "error": "invalid JSON"}, status_code=400)
+
+    sender = (body.get("sender") or "").strip()
+    target = (body.get("target") or "").strip()
+    message = body.get("message") or ""
+    commander = (body.get("commander") or "").strip()
+    corr_id = body.get("correlation_id", f"sq-relay-{uuid.uuid4().hex[:8]}")
+
+    if not sender or not message:
+        return JSONResponse(
+            {"status": "bad_request",
+             "error": "missing sender or message"}, status_code=400)
+
+    # Single-agent mode: target is informational, not used for routing
+    if target:
+        _log(f"[relay] {sender}→{target} (single-agent, ignoring target)")
+
+    # Connect to nanobot gateway WebSocket
+    ws_url = f"ws://127.0.0.1:{NANOBOT_WS_PORT}/"
+    nanobot_token = os.environ.get("NANOBOT_TOKEN", "").strip()
+    if nanobot_token:
+        ws_url += f"?token={nanobot_token}"
+
+    try:
+        ws = await asyncio.wait_for(
+            ws_lib.connect(ws_url, close_timeout=5), timeout=15)
+        async with ws:
+            # Wait for ready
+            greeting_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            greeting = json.loads(greeting_raw)
+            if greeting.get("event") != "ready":
+                _log(f"[relay] unexpected greeting: {greeting}")
+                return JSONResponse({
+                    "status": "protocol_error",
+                    "error": f"expected 'ready', got {greeting.get('event')}",
+                    "correlation_id": corr_id,
+                }, status_code=502)
+
+            chat_id = greeting.get("chat_id", "")
+            _log(f"[relay] {sender} ws ok (cid={chat_id[:12] if chat_id else '?'})")
+
+            # Build envelope
+            envelope: dict = {
+                "type": "message",
+                "chat_id": chat_id,
+                "content": message,
+                "sender_id": f"agent:{sender}",
+                "sender_name": sender,
+            }
+            if commander:
+                envelope["commander_id"] = f"oauth:{commander}"
+                envelope["commander_name"] = commander
+
+            await ws.send(json.dumps(envelope))
+            _log(f"[relay] {sender} → sent ({len(message)} chars)")
+
+            # Collect response deltas until turn_end
+            responses: list[str] = []
+            try:
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=RELAY_TIMEOUT)
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        _log(f"[relay] non-JSON frame ({len(raw)}B)")
+                        continue
+
+                    event = data.get("event", "")
+
+                    if event == "error":
+                        detail = data.get("detail", "unknown")
+                        _log(f"[relay] error: {detail}")
+                        return JSONResponse({
+                            "status": "framework_error",
+                            "error": detail,
+                            "correlation_id": corr_id,
+                        }, status_code=502)
+
+                    if event == "heartbeat":
+                        continue
+
+                    if event == "turn_end":
+                        reply = "\n".join(responses) if responses else "(empty)"
+                        _log(f"[relay] {sender} → done ({len(reply)} chars)")
+                        return JSONResponse({
+                            "status": "delivered",
+                            "target_response": reply,
+                            "correlation_id": corr_id,
+                        })
+
+                    if event == "delta":
+                        text = data.get("text", "")
+                        if text:
+                            responses.append(text)
+                        continue
+
+                    if event == "stream_end":
+                        continue
+
+                    content_val = data.get("content")
+                    if content_val and str(content_val).strip():
+                        responses.append(str(content_val))
+
+            except asyncio.TimeoutError:
+                if responses:
+                    reply = "\n".join(responses)
+                    _log(f"[relay] timeout, partial ({len(reply)} chars)")
+                    return JSONResponse({
+                        "status": "partial",
+                        "target_response": reply,
+                        "correlation_id": corr_id,
+                    })
+                _log(f"[relay] timeout ({RELAY_TIMEOUT}s)")
+                return JSONResponse({
+                    "status": "timeout",
+                    "error": f"no response within {RELAY_TIMEOUT}s",
+                    "correlation_id": corr_id,
+                }, status_code=504)
+
+    except asyncio.TimeoutError:
+        _log("[relay] connect timeout (15s)")
+        return JSONResponse({
+            "status": "connection_error",
+            "error": "WebSocket connection timed out",
+            "correlation_id": corr_id,
+        }, status_code=502)
+    except Exception as e:
+        _log(f"[relay] error: {type(e).__name__}: {e}")
+        return JSONResponse({
+            "status": "connection_error",
+            "error": f"{type(e).__name__}: {e}",
+            "correlation_id": corr_id,
+        }, status_code=502)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -560,6 +870,52 @@ async def ws_proxy(websocket: WebSocket) -> None:
                                 envelope["sender_name"] = username
                                 data = json.dumps(envelope)
                                 _log(f"WS → neo: type={envelope.get('type','?')} cid={envelope.get('chat_id','?')[:12]}")
+
+                                # Block messages to binding chat: don't forward to Neo.
+                                _binding_cid = _get_binding_chat_id()
+                                if _binding_cid and envelope.get("chat_id") == _binding_cid:
+                                    if envelope.get("type") == "message":
+                                        # User typed → static reply, no Neo
+                                        _channels = "、".join(f"**绑定{b.display}**" for b in _bindings)
+                                        _notice = f"👆 请点击上方链接绑定社交通道，无需在此聊天。\n\n点击 {_channels} 即可操作。"
+                                        await websocket.send_text(json.dumps({
+                                            "event": "delta", "data": _notice,
+                                            "chat_id": _binding_cid,
+                                            "sender_id": f"oauth:{username}",
+                                            "sender_name": username,
+                                        }))
+                                        await websocket.send_text(json.dumps({
+                                            "event": "stream_end", "chat_id": _binding_cid,
+                                            "sender_id": f"oauth:{username}",
+                                        }))
+                                        await websocket.send_text(json.dumps({
+                                            "event": "turn_end", "chat_id": _binding_cid,
+                                            "sender_id": f"oauth:{username}",
+                                        }))
+                                        _log(f"WS → blocked binding chat msg, sent static reply")
+                                        continue
+                                    if envelope.get("type") == "attach":
+                                        # User opened binding chat → send bulletin content
+                                        await websocket.send_text(json.dumps({
+                                            "event": "attached",
+                                            "chat_id": _binding_cid,
+                                        }))
+                                        await websocket.send_text(json.dumps({
+                                            "event": "delta", "data": BINDING_CHAT_CONTENT,
+                                            "chat_id": _binding_cid,
+                                            "sender_id": f"oauth:{username}",
+                                            "sender_name": username,
+                                        }))
+                                        await websocket.send_text(json.dumps({
+                                            "event": "stream_end", "chat_id": _binding_cid,
+                                            "sender_id": f"oauth:{username}",
+                                        }))
+                                        await websocket.send_text(json.dumps({
+                                            "event": "turn_end", "chat_id": _binding_cid,
+                                            "sender_id": f"oauth:{username}",
+                                        }))
+                                        _log(f"WS → blocked binding chat attach, sent bulletin content")
+                                        continue  # skip upstream.send()
                         except (json.JSONDecodeError, TypeError):
                             _log(f"WS → neo: non-JSON {data[:80]}")
                         await upstream.send(data)
@@ -570,7 +926,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         _log(f"WS c2u error: {exc}")
                         break
 
-            # ── Per-session state for binding prompt injection ──
+            # ── Per-session state for chat init ──
             have_chat_id = asyncio.Event()
             current_chat_id: str | None = None
 
@@ -582,7 +938,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         if isinstance(data, str):
                             try:
                                 ev = json.loads(data)
-                                # Detect "attached" → capture chat_id for injection
+                                # Detect "attached" → capture chat_id
                                 if ev.get("event") == "attached":
                                     cid = ev.get("chat_id")
                                     if cid:
@@ -599,53 +955,166 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         _log(f"WS u2c error: {exc}")
                         break
 
-            async def inject_binding_greeting():
-                """After upstream connects, create a new chat and inject binding prompt."""
+            async def setup_title():
+                """Ensure a '社交通道配置提示' chat exists, is correctly titled, and pinned."""
                 nonlocal current_chat_id
-                _log(f"WS injection: coroutine started (username={username})")
+                _log(f"WS setup_title: started (username={username})")
                 try:
-                    # Phase 1: try to get chat_id from client (JS auto-clicks New Chat)
-                    try:
-                        await asyncio.wait_for(have_chat_id.wait(), timeout=6)
-                        await asyncio.sleep(0.3)
-                        _log(f"WS injection: got chat_id from client (cid={current_chat_id[:12] if current_chat_id else '?'})")
-                    except asyncio.TimeoutError:
-                        _log(f"WS injection: client didn't create chat in 6s, will create one")
+                    import os as _os, json as _json, time as _time
 
-                    if not current_chat_id:
-                        # Client hasn't created a chat — create one by injecting
-                        # a new_chat command, then the message
-                        new_cid = str(uuid.uuid4())
-                        # First, create the chat
-                        await upstream.send(json.dumps({
-                            "type": "new_chat",
-                            "chat_id": new_cid,
+                    _data_root = _os.environ.get("DATA_ROOT", "/data")
+                    _sessions_dir = f"{_data_root}/instances/sessions"
+                    _webui_dir = f"{_data_root}/instances/default/webui"
+                    _sidebar_path = f"{_webui_dir}/sidebar-state.json"
+                    _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+
+                    # ── Step 0: check for an existing pinned binding chat ──
+                    _pinned_cid = None
+                    if _os.path.exists(_sidebar_path):
+                        try:
+                            with open(_sidebar_path) as _f:
+                                _state = _json.load(_f) or {}
+                            for _pk in _state.get("pinned_keys", []):
+                                if not isinstance(_pk, str) or not _pk.startswith("websocket:"):
+                                    continue
+                                _cid = _pk.split(":", 1)[1]
+                                _sp = f"{_sessions_dir}/websocket_{_cid}.jsonl"
+                                if _os.path.exists(_sp):
+                                    with open(_sp) as _sf:
+                                        _meta = _json.loads(_sf.readline())
+                                    if _meta.get("metadata", {}).get("title") == BINDING_TITLE:
+                                        _pinned_cid = _cid
+                                        break
+                        except Exception:
+                            pass
+
+                    if _pinned_cid:
+                        # Existing pinned binding chat → redirect to it
+                        current_chat_id = _pinned_cid
+                        await upstream.send(_json.dumps({
+                            "type": "attach",
+                            "chat_id": _pinned_cid,
                             "sender_id": f"oauth:{username}",
                             "sender_name": username,
                         }))
-                        await asyncio.sleep(0.3)
-                        current_chat_id = new_cid
-                        _log(f"WS → neo: created new chat {new_cid[:12]}")
+                        try:
+                            await asyncio.wait_for(have_chat_id.wait(), timeout=5)
+                        except asyncio.TimeoutError:
+                            pass
+                        _log(f"WS setup_title: reuse pinned chat (cid={current_chat_id[:12]})")
+                    else:
+                        # No existing binding chat → find or create
+                        try:
+                            await asyncio.wait_for(have_chat_id.wait(), timeout=4)
+                            await asyncio.sleep(0.3)
+                            _log(f"WS setup_title: got chat_id from client (cid={current_chat_id[:12] if current_chat_id else '?'})")
+                        except asyncio.TimeoutError:
+                            _log(f"WS setup_title: client didn't create chat in 4s, will create one")
+
+                        if not current_chat_id:
+                            await upstream.send(_json.dumps({
+                                "type": "new_chat",
+                                "chat_id": str(uuid.uuid4()),
+                                "sender_id": f"oauth:{username}",
+                                "sender_name": username,
+                            }))
+                            try:
+                                await asyncio.wait_for(have_chat_id.wait(), timeout=5)
+                                await asyncio.sleep(0.2)
+                            except asyncio.TimeoutError:
+                                _log(f"WS setup_title: neo didn't attach new chat in 5s")
 
                     if current_chat_id:
-                        envelope = {
-                            "type": "message",
-                            "chat_id": current_chat_id,
-                            "content": (
-                                "用户刚刚登录了Web界面。请主动问候这个用户，"
-                                "并介绍频道绑定功能：用户可以绑定微信、钉钉等频道，"
-                                "这样以后即使不打开网页，也能通过绑定的频道接收你的消息。"
-                                "请用友好的语气引导用户，并询问他们是否想要绑定某个频道。"
-                            ),
-                            "sender_id": f"oauth:{username}",
-                            "sender_name": username,
-                        }
-                        await upstream.send(json.dumps(envelope))
-                        _log(f"WS → neo: injected binding greeting (cid={current_chat_id[:12]})")
-                except Exception as exc:
-                    _log(f"WS injection error: {exc}")
+                        # ── Write session file ──
+                        _fname = f"websocket_{current_chat_id}.jsonl"
+                        _fpath = f"{_sessions_dir}/{_fname}"
+                        _key = f"websocket:{current_chat_id}"
+                        _os.makedirs(_sessions_dir, exist_ok=True)
 
-            await asyncio.gather(c2u(), u2c(), inject_binding_greeting(), return_exceptions=True)
+                        if _os.path.exists(_fpath):
+                            with open(_fpath, "r+") as _f:
+                                _lines = _f.readlines()
+                                if _lines:
+                                    _meta = _json.loads(_lines[0])
+                                    _meta.setdefault("metadata", {})["title"] = BINDING_TITLE
+                                    _lines[0] = _json.dumps(_meta, ensure_ascii=False) + "\n"
+                                # Replace first user message content (or add new one)
+                                _found = False
+                                for _i, _line in enumerate(_lines[1:], 1):
+                                    try:
+                                        _entry = _json.loads(_line)
+                                        if _entry.get("role") == "user":
+                                            _entry["content"] = BINDING_CHAT_CONTENT
+                                            _entry["timestamp"] = _now
+                                            _lines[_i] = _json.dumps(_entry, ensure_ascii=False) + "\n"
+                                            _found = True
+                                            break
+                                    except Exception:
+                                        continue
+                                if not _found:
+                                    _lines.append(_json.dumps({
+                                        "role": "user", "content": BINDING_CHAT_CONTENT,
+                                        "timestamp": _now,
+                                    }, ensure_ascii=False) + "\n")
+                                _f.seek(0); _f.writelines(_lines); _f.truncate()
+                            # Also rewrite the WebUI transcript so content appears on open.
+                            _tpath = f"{_webui_dir}/websocket_{current_chat_id}.jsonl"
+                            with open(_tpath, "w") as _tf:
+                                _tf.write(_json.dumps({
+                                    "event": "delta", "text": BINDING_CHAT_CONTENT, "chat_id": current_chat_id,
+                                }, ensure_ascii=False) + "\n")
+                                _tf.write(_json.dumps({
+                                    "event": "stream_end", "text": BINDING_CHAT_CONTENT, "chat_id": current_chat_id,
+                                }, ensure_ascii=False) + "\n")
+                                _tf.write(_json.dumps({
+                                    "event": "turn_end", "chat_id": current_chat_id,
+                                }, ensure_ascii=False) + "\n")
+                            _log(f"WS setup_title: updated session + transcript (cid={current_chat_id[:12]})")
+                        else:
+                            with open(_fpath, "w") as _f:
+                                _f.write(_json.dumps({
+                                    "_type": "metadata", "key": _key,
+                                    "created_at": _now, "updated_at": _now,
+                                    "metadata": {"title": BINDING_TITLE, "webui": True},
+                                    "last_consolidated": 0,
+                                }, ensure_ascii=False) + "\n")
+                                _f.write(_json.dumps({
+                                    "role": "user", "content": BINDING_CHAT_CONTENT,
+                                    "timestamp": _now,
+                                }, ensure_ascii=False) + "\n")
+                            _log(f"WS setup_title: created session (cid={current_chat_id[:12]})")
+
+                        # ── Pin to sidebar (idempotent) ──
+                        _os.makedirs(_webui_dir, exist_ok=True)
+                        _sidebar_state = {}
+                        if _os.path.exists(_sidebar_path):
+                            try:
+                                with open(_sidebar_path) as _f:
+                                    _sidebar_state = _json.load(_f) or {}
+                            except Exception:
+                                pass
+
+                        _pinned = _sidebar_state.setdefault("pinned_keys", [])
+                        if _key not in _pinned:
+                            _pinned.insert(0, _key)
+                            _sidebar_state["updated_at"] = _now
+                            _sidebar_state.setdefault("schema_version", 1)
+                            with open(_sidebar_path, "w") as _f:
+                                _json.dump(_sidebar_state, _f, ensure_ascii=False, indent=2)
+                                _f.write("\n")
+                            _log(f"WS setup_title: pinned chat (cid={current_chat_id[:12]})")
+
+                        # ── Notify client ──
+                        await websocket.send_text(json.dumps({
+                            "event": "session_updated",
+                            "chat_id": current_chat_id,
+                            "scope": "updated",
+                        }))
+                        _log(f"WS → client: session_updated")
+                except Exception as exc:
+                    _log(f"WS setup_title error: {exc}")
+
+            await asyncio.gather(c2u(), u2c(), setup_title(), return_exceptions=True)
     except Exception as exc:
         _log(f"WS proxy error: {exc}")
     finally:
@@ -688,36 +1157,23 @@ def _check_owner(username: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Channel binding routes (internal: called by nanobot agent)
+# Channel binding — data-driven (routes + pages from BindingSpec registry)
 # ═══════════════════════════════════════════════════════════════════
 
 
-async def _bind_wechat_qr(request: Request) -> Response:
-    """POST /api/bind/wechat/qr — agent 调用，获取微信二维码"""
-    _check_internal(request)
-    data = await wechat_fetch_qr()
-    return Response(json.dumps(data, ensure_ascii=False), media_type="application/json")
+def _make_bind_page_handler(spec):
+    """Closure: returns a handler that serves spec.bind_page_html."""
+    async def _bind_page(request: Request) -> HTMLResponse:
+        return HTMLResponse(spec.bind_page_html)
+    return _bind_page
 
 
-async def _bind_wechat_status(request: Request) -> Response:
-    """GET /api/bind/wechat/status?qrcode=xxx — agent 轮询扫码状态"""
-    _check_internal(request)
-    qid = request.query_params.get("qrcode", "")
-    if not qid:
-        return Response(json.dumps({"error": "missing qrcode"}), media_type="application/json", status_code=400)
-    data = await wechat_check_status(qid)
-    return Response(json.dumps(data, ensure_ascii=False), media_type="application/json")
-
-
-async def _bind_dingtalk(request: Request) -> Response:
-    """POST /api/bind/dingtalk — agent 调用，写入钉钉凭证"""
-    _check_internal(request)
-    try:
-        body = json.loads(await request.body())
-    except Exception:
-        return Response(json.dumps({"error": "invalid JSON"}), media_type="application/json", status_code=400)
-    data = await dingtalk_bind(body.get("client_id", ""), body.get("client_secret", ""))
-    return Response(json.dumps(data, ensure_ascii=False), media_type="application/json")
+def _wrap_internal(handler):
+    """Wrap a handler with localhost auth check."""
+    async def _wrapper(request: Request) -> Response:
+        _check_internal(request)
+        return await handler(request)
+    return _wrapper
 
 
 async def _bind_status(request: Request) -> Response:
@@ -743,9 +1199,19 @@ app.router.add_route(CALLBACK_PATH, callback, methods=["GET"])
 app.router.add_route("/auth/callback", callback, methods=["GET"])
 app.router.add_route("/login/callback", callback, methods=["GET"])
 app.router.add_route("/health", health, methods=["GET"])
-app.router.add_route("/api/bind/wechat/qr", _bind_wechat_qr, methods=["POST"])
-app.router.add_route("/api/bind/wechat/status", _bind_wechat_status, methods=["GET"])
-app.router.add_route("/api/bind/dingtalk", _bind_dingtalk, methods=["POST"])
+app.router.add_route("/api/squad/relay", squad_relay, methods=["POST"])
+
+# Register binding routes from discovered specs
+for _b in _bindings:
+    # Bind page: GET /bind/<name>
+    app.router.add_route(f"/bind/{_b.name}", _make_bind_page_handler(_b), methods=["GET"])
+    # Public sub-routes: GET/POST /bind/<name>/<suffix>
+    for _suffix, _method, _handler in _b.public_routes:
+        app.router.add_route(f"/bind/{_b.name}{_suffix}", _handler, methods=[_method])
+    # Internal sub-routes: GET/POST /api/bind/<name>/<suffix> (wrapped with auth check)
+    for _suffix, _method, _handler in _b.internal_routes:
+        app.router.add_route(f"/api/bind/{_b.name}{_suffix}", _wrap_internal(_handler), methods=[_method])
+
 app.router.add_route("/api/bind/status", _bind_status, methods=["GET"])
 app.router.add_route("/{path:path}", http_proxy, methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 app.router.add_websocket_route("/{path:path}", ws_proxy)
