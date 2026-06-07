@@ -160,11 +160,11 @@ document.getElementById('bind-form').addEventListener('submit',async function(e)
       })
     });
     let d=await r.json();
-    if(d.errcode===0||d.status==='ok'){
-      msg.className='success';msg.textContent='✅ 钉钉绑定成功！';
-    }else{
-      msg.className='error';msg.textContent='❌ '+(d.error||d.errmsg||'绑定失败');
-    }
+     if(d.ok){
+       msg.className='success';msg.textContent='✅ '+d.message;
+     }else{
+       msg.className='error';msg.textContent='❌ '+(d.error||'绑定失败');
+     }
   }catch(e){msg.className='error';msg.textContent='网络错误: '+e}
 });
 </script>
