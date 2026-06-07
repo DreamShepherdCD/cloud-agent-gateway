@@ -100,10 +100,13 @@ DINGTALK_BIND_PAGE = """\
 body{display:flex;align-items:center;justify-content:center;min-height:100vh;
      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
      background:#0f0f0f;color:#e0e0e0}
-.card{text-align:center;padding:2rem;max-width:400px}
-h1{font-size:1.6rem;margin-bottom:.5rem;color:#fff}
-p{color:#999;margin-bottom:1rem;font-size:.9rem}
-form{text-align:left}
+ .card{text-align:center;padding:2rem;max-width:440px;width:100%}
+ h1{font-size:1.6rem;margin-bottom:.5rem;color:#fff}
+ p{color:#999;margin-bottom:1rem;font-size:.9rem}
+ .hint{color:#666;font-size:.8rem;margin-bottom:1rem;text-align:left;
+       background:#1a1a1a;border-radius:6px;padding:.8rem;line-height:1.6}
+ .hint a{color:#3b82f6;font-size:.85rem}
+ form{text-align:left}
 label{display:block;margin:.8rem 0 .3rem;color:#ccc;font-size:.9rem}
 input{width:100%;padding:10px 12px;border-radius:6px;border:1px solid #333;
        background:#1a1a1a;color:#e0e0e0;font-size:.95rem}
@@ -124,6 +127,12 @@ input:focus{outline:none;border-color:#3b82f6}
 <div class="card">
 <h1>📎 绑定钉钉</h1>
 <p>输入钉钉应用凭证完成绑定</p>
+<div class="hint">
+  从 <a href="https://open-dev.dingtalk.com/fe/app" target="_blank">钉钉开放平台</a> 获取凭证：<br>
+  1. 创建「企业内部应用」→ 机器人<br>
+  2. 在「凭证与基础信息」中复制 AppKey 和 AppSecret<br>
+  3. 在「权限管理」中开通「企业内机器人发送消息」权限
+</div>
 <form id="bind-form">
 <label for="client_id">AppKey</label>
 <input id="client_id" name="client_id" placeholder="dingxxxxxxxx" required>
