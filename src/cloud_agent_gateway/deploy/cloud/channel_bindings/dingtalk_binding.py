@@ -127,12 +127,13 @@ input:focus{outline:none;border-color:#3b82f6}
 <div class="card">
 <h1>📎 绑定钉钉</h1>
 <p>输入钉钉应用凭证完成绑定</p>
-<div class="hint">
-  从 <a href="https://open-dev.dingtalk.com/fe/app" target="_blank">钉钉开放平台</a> 获取凭证：<br>
-  1. 创建「企业内部应用」→ 机器人<br>
-  2. 在「凭证与基础信息」中复制 AppKey 和 AppSecret<br>
-  3. 在「权限管理」中开通「企业内机器人发送消息」权限
-</div>
+ <div class="hint">
+  从 <a href="https://open-dev.dingtalk.com/" target="_blank">钉钉开发者后台</a> 获取凭证：<br>
+  1. 创建应用 → 添加「机器人」能力<br>
+  2. 消息接收模式选 <b>Stream 模式</b><br>
+  3. 在「凭证与基础信息」中复制 AppKey 和 AppSecret<br>
+  4. 发布应用
+ </div>
 <form id="bind-form">
 <label for="client_id">AppKey</label>
 <input id="client_id" name="client_id" placeholder="dingxxxxxxxx" required>
