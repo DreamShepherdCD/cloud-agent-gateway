@@ -60,8 +60,11 @@ def discover() -> list[BindingSpec]:
     """
     try:
         import cloud_agent_gateway.deploy.cloud.channel_bindings  # noqa: F401
-    except ImportError:
-        pass
+    except ImportError as e:
+        import logging
+        logging.getLogger("cloud_agent_gateway").warning(
+            f"channel_bindings import failed (all binding links hidden): {e}"
+        )
     return list(_registry.values())
 
 
