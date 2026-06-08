@@ -457,3 +457,47 @@ class ModelScopePlatform(CloudPlatformProtocol):
                 "name": userinfo.get("nickname") or userinfo.get("name") or username,
             }
             return RedirectResponse(url="/")
+    # ── Squad authorisation methods ──
+
+    def get_commander_whitelist(self) -> list[str]:
+        return self._commander_whitelist
+
+    def get_user_agent_map(self) -> dict[str, str]:
+        return self._user_agent_map
+
+    def get_agent_for_user(self, username: str) -> str:
+        if not username or username == "guest":
+            return self._webui_agent
+        if username in self._commander_whitelist:
+            return self._webui_agent
+        peer_key = self._user_agent_map.get(username, "")
+        if peer_key.startswith("NANOBOT_PEER_"):
+            agent = peer_key[len("NANOBOT_PEER_"):].lower()
+            if agent in self._squad_roster:
+                return agent
+            return self._webui_agent
+        if peer_key:
+            return peer_key
+        return self._webui_agent
+
+    def is_commander(self, session_user: Any) -> bool:
+        if session_user is None:
+            return False
+        username = (
+            session_user.get("username", "")
+            if isinstance(session_user, dict)
+            else str(session_user)
+        )
+        return username in self._commander_whitelist
+
+    def is_member(self, username: str) -> bool:
+        return username.lower() in [k.lower() for k in self._user_agent_map]
+
+    def check_relay_permission(self, sender: str, target: str) -> bool:
+        if sender in self._commander_whitelist:
+            return True
+        if sender in self._user_agent_map:
+            return True
+        return False
+
+    # ── OAuth routes ──
