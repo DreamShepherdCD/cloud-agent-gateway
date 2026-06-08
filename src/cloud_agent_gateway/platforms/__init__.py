@@ -26,6 +26,14 @@ from cloud_agent_gateway.platforms.base import CloudPlatformProtocol, PlatformSp
 
 PLATFORM_SPECS: tuple[PlatformSpec, ...] = (
     PlatformSpec(
+        name="modelscope-squad",
+        display_name="ModelScope Staging (Squad)",
+        detect_env="MODELSCOPE_ENVIRONMENT",
+        detect_env_value="studio",
+        module=".modelscope_squad",
+        priority=5,  # higher priority than plain modelscope
+    ),
+    PlatformSpec(
         name="modelscope",
         display_name="ModelScope",
         detect_env="MODELSCOPE_ENVIRONMENT",
@@ -60,10 +68,15 @@ platform: CloudPlatformProtocol
 
 def _detect() -> CloudPlatformProtocol:
     """Evaluate specs in priority order; first match wins; fallback otherwise."""
+    import os as _os
     ordered = sorted(PLATFORM_SPECS, key=lambda s: s.priority)
 
     for spec in ordered:
         if spec.matches():
+            # modelscope-squad shares detection with modelscope but is higher-priority.
+            # Cloud Demo (CLOUD_DEMO_MODE=1) should use plain modelscope, not squad.
+            if spec.name == "modelscope-squad" and _os.environ.get("CLOUD_DEMO_MODE") == "1":
+                continue
             _log(spec.name)
             return _load_platform(spec)
 

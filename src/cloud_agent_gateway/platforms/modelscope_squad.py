@@ -606,10 +606,10 @@ class ModelScopePlatform(PlatformProtocol):
 from cloud_agent_gateway.platforms.base import PlatformSpec  # PlatformProtocol imported at top
 
 PLATFORM_SPEC = PlatformSpec(
-    name="modelscope",
-    display_name="ModelScope Studio",
-    detect_url_contains="modelscope",
-    detect_url_env="OIDC_CONFIG_URL",
-    module=".modelscope",
-    priority=30,
+    name="modelscope-squad",
+    display_name="ModelScope Studio (Squad)",
+    detect_env="MODELSCOPE_ENVIRONMENT",
+    detect_env_value="studio",
+    module=".modelscope_squad",
+    priority=5,
 )
