@@ -297,3 +297,15 @@ class ModelScopePlatform(CloudPlatformProtocol):
         httpx OAuth (bypassing session-cookie-based CSRF).
         """
         return ["authorization", "set-cookie"]
+
+    # ── Session Middleware ──
+
+    @property
+    def session_kwargs(self) -> dict:
+        return {
+            "secret_key": os.environ.get(
+                "SESSION_SECRET", "nanobot_modelscope_secret_k8s"
+            ),
+            "https_only": True,
+            "same_site": "none",
+        }
