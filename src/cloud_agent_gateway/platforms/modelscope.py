@@ -309,3 +309,150 @@ class ModelScopePlatform(CloudPlatformProtocol):
             "https_only": True,
             "same_site": "none",
         }
+
+
+    # ── Squad Gatekeeper Methods (only used in non-Cloud-Demo mode) ──
+
+    def __init__(self):
+        self._webui_agent: str = ""
+        self._squad_roster: dict[str, dict] = {}
+        self._commander_whitelist: list[str] = []
+        self._user_agent_map: dict[str, str] = {}
+
+    def refresh_config(
+        self,
+        *,
+        webui_agent: str = "",
+        squad_roster: dict[str, dict] | None = None,
+    ) -> None:
+        """Load configuration — file-first (squad_config.json), env-fallback."""
+        try:
+            from squad_config_loader import (
+                get_commander_whitelist,
+                get_peers,
+                get_user_agent_map,
+                get_webui_agent,
+            )
+            self._commander_whitelist = get_commander_whitelist()
+            self._user_agent_map = get_user_agent_map()
+            self._webui_agent = webui_agent or get_webui_agent()
+            if squad_roster is None:
+                squad_roster = get_peers()
+        except ImportError:
+            logger.warning("squad_config_loader not available — falling back to env vars")
+            self._commander_whitelist = [
+                u.strip()
+                for u in os.environ.get("COMMANDER_WHITELIST", "").split(",")
+                if u.strip()
+            ]
+            self._user_agent_map = {}
+            raw = os.environ.get("USER_AGENT_MAP", "")
+            if raw:
+                try:
+                    self._user_agent_map = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    for pair in raw.split(","):
+                        if ":" in pair:
+                            k, v = pair.split(":", 1)
+                            self._user_agent_map[k.strip()] = v.strip()
+            self._webui_agent = webui_agent or os.environ.get("WEBUI_AGENT", "neo")
+
+        self._squad_roster = squad_roster or {}
+
+    def _public_callback_url(self, request: Any) -> str:
+        """Build public-facing callback URL using .ms.show domain."""
+        space_id = os.environ.get("SPACE_ID", "")
+        if space_id:
+            return f"https://{space_id}.ms.show/api/squad/auth/callback"
+        host = request.headers.get("x-forwarded-host", "")
+        if host:
+            return f"https://{host}/api/squad/auth/callback"
+        return str(request.url_for("modelscope_callback"))
+
+    @property
+    def public_paths(self) -> list[str]:
+        return [
+            "/health",
+            "/api/squad/auth/login",
+            "/api/squad/auth/callback",
+            "/api/squad/relay",
+            "/api/squad/tasks",
+            "/api/squad/sessions",
+        ]
+
+    def _guess_username(self, request: Any) -> str:
+        """Extract ModelScope-authenticated username from request context."""
+        user = request.session.get("user", {})
+        if isinstance(user, dict) and user.get("username"):
+            return user["username"]
+        forwarded = request.headers.get("x-forwarded-user", "")
+        if forwarded:
+            return forwarded
+        return "guest"
+
+    def create_auth_middleware(self):
+        """Lightweight auth middleware — allow public paths, set guest user session."""
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.requests import Request as SR
+
+        platform = self
+
+        class _ModelScopeAuthMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: SR, call_next):
+                path = request.url.path
+                for prefix in platform.public_paths:
+                    if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+                        return await call_next(request)
+                if path.startswith("/api/squad/"):
+                    return await call_next(request)
+                if not request.session.get("user"):
+                    username = platform._guess_username(request)
+                    request.session["user"] = {"username": username, "name": username}
+                return await call_next(request)
+
+        return _ModelScopeAuthMiddleware
+
+    def register_routes(self, app):
+        """Register MS-specific routes: OAuth login + callback."""
+        from starlette.requests import Request
+        from starlette.responses import RedirectResponse
+
+        platform = self
+        _webui_ws_port = 0
+        _agent_name = ""
+
+        def _ensure_webui():
+            nonlocal _webui_ws_port, _agent_name
+            if _webui_ws_port > 0:
+                return
+            _agent_name = platform._webui_agent or "neo"
+            peer = platform._squad_roster.get(_agent_name, {})
+            _webui_ws_port = peer.get("ws_port", 20002)
+
+        @app.get("/api/squad/auth/login")
+        async def modelscope_login(request: Request):
+            _ensure_webui()
+            redirect_uri = platform._public_callback_url(request)
+            client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+            auth_url = (
+                f"https://modelscope.cn/oauth/authorize"
+                f"?response_type=code"
+                f"&client_id={client_id}"
+                f"&redirect_uri={redirect_uri}"
+                f"&scope=profile"
+            )
+            return RedirectResponse(url=auth_url)
+
+        @app.get("/api/squad/auth/callback", name="modelscope_callback")
+        async def modelscope_callback(request: Request):
+            _ensure_webui()
+            result = await platform.exchange_token(request)
+            if result is None:
+                return RedirectResponse(url="/?error=auth_failed")
+            userinfo = result.get("userinfo", {})
+            username = platform.extract_username(userinfo)
+            request.session["user"] = {
+                "username": username,
+                "name": userinfo.get("nickname") or userinfo.get("name") or username,
+            }
+            return RedirectResponse(url="/")
