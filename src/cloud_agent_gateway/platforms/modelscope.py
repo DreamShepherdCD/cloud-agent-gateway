@@ -22,6 +22,7 @@ import sys
 from typing import Any
 
 import httpx
+from fastapi import Request  # noqa: F401 — used by register_routes route annotations
 from authlib.integrations.starlette_client import OAuth
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol
