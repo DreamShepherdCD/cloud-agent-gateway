@@ -568,7 +568,10 @@ class ModelScopePlatform(PlatformProtocol):
         else:
             _log("⚠️ [Template] 无模板可用 — agent 将跳过")
 
-        # 5. Restore agent configs from dataset (recovery for corrupted/missing configs)
+        # 5. Restore agent configs from dataset (only for missing agents)
+        #    Existing configs may contain channel bindings (QQ/WeChat/Feishu etc.)
+        #    which are NOT in the dataset snapshot — overwriting them would
+        #    silently break channel bindings after every restart.
         for item in _os.listdir(dataset_dir):
             item_path = _os.path.join(dataset_dir, item)
             cfg_file = _os.path.join(item_path, "config.json")
@@ -576,8 +579,11 @@ class ModelScopePlatform(PlatformProtocol):
                 dst_dir = f"{mount_path}/instances/{item}"
                 dst_cfg = f"{dst_dir}/config.json"
                 _os.makedirs(dst_dir, exist_ok=True)
-                _shutil.copy2(cfg_file, dst_cfg)
-                _log(f"🔄 [{item}] config.json restored from dataset")
+                if not _os.path.isfile(dst_cfg):
+                    _shutil.copy2(cfg_file, dst_cfg)
+                    _log(f"🔄 [{item}] config.json restored from dataset")
+                else:
+                    _log(f"ℹ️ [{item}] config.json already exists — skipping dataset restore")
 
         # 5b. Restore squad_config from dataset (user-editable via dataset web UI)
         squad_cfg_ds = f"{dataset_dir}/squad_config.ms-staging.json"
