@@ -39,6 +39,11 @@ class PlatformSpec:
     display_name: str = ""
     module: str = ""  # relative import path, e.g. ".hf_spaces"
 
+    # ── 三维坐标 (platform × engine × squad) ──
+    platform: str = ""   # "hf" | "ms" | "docker" | "" (auto/any)
+    engine: str = ""     # "nanobot" | "openclaw" | "" (any)
+    squad: bool = False  # True = Squad Legion overlay present
+
     # Detection rules — evaluated in priority order by ``matches()``.
     detect_env: str = ""        # env var that must be set (e.g. "HF_SPACE")
     detect_env_value: str = ""  # optional exact value match for detect_env
@@ -55,7 +60,14 @@ class PlatformSpec:
         return self.display_name or self.name
 
     def matches(self) -> bool:
-        """Evaluate detection rules against the current environment."""
+        """Evaluate detection rules against the current environment.
+
+        Detection layers:
+        0) ``DEPLOY_PLATFORM`` explicit override
+        1) Platform detection (env vars, URL patterns)
+        2) Engine filter
+        3) Squad filter
+        """
         if self.is_fallback:
             return False
 
@@ -64,7 +76,23 @@ class PlatformSpec:
         if _deploy:
             return self.name == _deploy
 
-        # 1) Structured env detection (with optional exact-value match)
+        # 1) Platform detection
+        if not self._platform_matches():
+            return False
+
+        # 2) Engine filter
+        if self.engine and not _detect_engine(self.engine):
+            return False
+
+        # 3) Squad filter
+        if self.squad != _detect_squad():
+            return False
+
+        return True
+
+    def _platform_matches(self) -> bool:
+        """Check platform-level detection rules (env vars, URL patterns)."""
+        # Structured env detection (with optional exact-value match)
         if self.detect_env:
             raw = os.environ.get(self.detect_env)
             if raw is not None:
@@ -72,11 +100,11 @@ class PlatformSpec:
                     return raw == self.detect_env_value
                 return True
 
-        # 2) Alternative env detection
+        # Alternative env detection
         if self.detect_env_alt and os.environ.get(self.detect_env_alt):
             return True
 
-        # 3) URL-based detection
+        # URL-based detection
         if self.detect_url_contains:
             url = os.environ.get(self.detect_url_env, "")
             if self.detect_url_contains.lower() in url.lower():
@@ -244,3 +272,26 @@ class CloudPlatformProtocol(Protocol):
         ``authorization``, ``set-cookie``, ``cookie``.
         """
         return []
+
+
+# ── Engine & Squad detection helpers ──
+
+
+def _detect_engine(engine: str) -> bool:
+    """Check if *engine* is available in the current environment."""
+    if not engine:
+        return True  # any engine
+    if engine == "nanobot":
+        return True  # always installed in our deployments
+    # Future: check for openclaw, etc.
+    return False
+
+
+def _detect_squad() -> bool:
+    """Check if Squad Legion overlay is present."""
+    if os.environ.get("SQUAD_LEGION") == "true":
+        return True
+    if os.environ.get("CLOUD_DEMO_MODE") == "1":
+        return False
+    # Transitional fallback — remove once all Squad spaces set SQUAD_LEGION=true
+    return os.path.exists("/app/deploy/huggingface/gatekeeper.py")
