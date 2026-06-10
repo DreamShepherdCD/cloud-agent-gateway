@@ -13,14 +13,6 @@ so that ``eval "$(python3 platform_setup.py)"`` works correctly.
 
 from __future__ import annotations
 
-import os
-import sys
-
-# Add deploy/cloud/ to the import path so platforms/ can be found
-_cloud_dir = os.path.dirname(os.path.abspath(__file__))
-if _cloud_dir not in sys.path:
-    sys.path.insert(0, _cloud_dir)
-
 from cloud_agent_gateway.platforms import platform
 
 
