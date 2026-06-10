@@ -107,16 +107,7 @@ class HFSpacesPlatform(CloudPlatformProtocol):
 
             return {"userinfo": user_resp.json(), "access_token": access_token}
 
-    async def fetch_userinfo(self, token: dict) -> dict | None:
-        return token.get("userinfo") if token else None
 
-    def extract_username(self, userinfo: dict) -> str:
-        return (
-            userinfo.get("preferred_username")
-            or userinfo.get("username")
-            or userinfo.get("name")
-            or "Unknown"
-        )
 
     # ── Entrypoint setup ──
 
@@ -147,25 +138,4 @@ class HFSpacesPlatform(CloudPlatformProtocol):
 
         return "\n".join(exports)
 
-    @staticmethod
-    async def fetch_userinfo(token_data: dict) -> dict | None:
-        """Fetch userinfo from HF OAuth endpoint."""
-        import httpx
 
-        access_token = token_data.get("access_token", "")
-        if not access_token:
-            return None
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    "https://huggingface.co/oauth/userinfo",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    return resp.json()
-        except Exception as exc:
-            import sys
-
-            sys.stderr.write(f"[hf_spaces] fetch_userinfo error: {exc}\n")
-        return None

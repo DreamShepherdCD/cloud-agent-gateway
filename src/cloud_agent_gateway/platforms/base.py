@@ -148,12 +148,25 @@ class CloudPlatformProtocol(Protocol):
         ...
 
     async def fetch_userinfo(self, token: dict) -> dict | None:
-        """Fetch user profile from the identity provider's userinfo endpoint."""
-        ...
+        """Fetch user profile from the identity provider's userinfo endpoint.
+
+        Default: extract userinfo already embedded in token response.
+        Override for platforms that need to re-fetch via HTTP.
+        """
+        return token.get("userinfo") if token else None
 
     def extract_username(self, userinfo: dict) -> str:
-        """Extract the canonical username from a userinfo dict."""
-        ...
+        """Extract the canonical username from a userinfo dict.
+
+        Default (HF): preferred_username → username → name → "Unknown".
+        Override for platforms with different field priorities.
+        """
+        return (
+            userinfo.get("preferred_username")
+            or userinfo.get("username")
+            or userinfo.get("name")
+            or "Unknown"
+        )
 
     # ── Authorisation (Squad Legion extension) ──
     def get_commander_whitelist(self) -> list[str]:
@@ -177,8 +190,18 @@ class CloudPlatformProtocol(Protocol):
         ...
 
     def is_member(self, username: str) -> bool:
-        """Check whether *username* is a registered squad member."""
-        ...
+        """Check whether *username* is a registered squad member.
+
+        Default: check if username is a key in the user_agent_map.
+        Returns False for non-Squad platforms without user_agent_map.
+        """
+        try:
+            user_map = self.get_user_agent_map()
+        except (AttributeError, NotImplementedError):
+            return False
+        if not user_map:
+            return False
+        return username.lower() in [k.lower() for k in user_map]
 
     # ── Routing (Squad Legion extension) ──
     @property
@@ -225,11 +248,38 @@ class CloudPlatformProtocol(Protocol):
     ) -> tuple[str | None, str | None]:
         """Process a Commander WS message before forwarding to neo.
 
+        Default Squad behaviour: inject OAuth identity into envelope,
+        block messages from unauthorized non-guest users.
+
         Returns ``(processed_data, blocked_reason)``.
         If *blocked_reason* is not None, the message is blocked.
-        Default: pass-through.
         """
-        return (data, None)
+        import json
+
+        authorized = is_commander or self.is_member(username)
+        if not authorized and username != "guest":
+            return (None, "🔒 只读模式: 请登录后再发送消息")
+
+        ident = f"{real_name} (oauth:{username})" if real_name != "Guest" else "Guest"
+        sender_id = f"oauth:{username}" if authorized else "guest"
+
+        try:
+            envelope = json.loads(data)
+        except Exception:
+            envelope = {}
+        if not isinstance(envelope, dict):
+            envelope = {}
+
+        envelope["sender_name"] = ident
+        envelope["sender_id"] = sender_id
+
+        if is_commander:
+            old_content = envelope.get("content", "")
+            prefix = f"[{real_name}]: "
+            if isinstance(old_content, str) and not old_content.startswith(prefix):
+                envelope["content"] = prefix + old_content
+
+        return (json.dumps(envelope), None)
 
     # ── Entrypoint setup ──
 

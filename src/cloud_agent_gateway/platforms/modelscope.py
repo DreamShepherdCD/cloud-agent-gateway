@@ -118,10 +118,7 @@ class ModelScopePlatform(CloudPlatformProtocol):
             _log(f"userinfo: {_json.dumps(userinfo)}")
             return {"userinfo": userinfo, "access_token": access_token}
 
-    # Note: single fetch_userinfo — uses cached userinfo from exchange_token.
-    # Do NOT add a second static version; Python's last-def-wins would shadow this.
-    async def fetch_userinfo(self, token: dict) -> dict | None:
-        return token.get("userinfo") if token else None
+
 
     def extract_username(self, userinfo: dict) -> str:
         return (

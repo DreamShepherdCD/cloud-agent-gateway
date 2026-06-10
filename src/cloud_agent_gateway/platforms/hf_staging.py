@@ -172,15 +172,7 @@ class HFStagingPlatform(PlatformProtocol):
 
             return {"userinfo": user_resp.json(), "access_token": access_token}
 
-    async def fetch_userinfo(self, token: dict) -> dict | None:
-        """HF userinfo is already included in the token response by authlib."""
-        return token.get("userinfo")
 
-    def extract_username(self, userinfo: dict) -> str:
-        return (userinfo.get("preferred_username")
-                or userinfo.get("username")
-                or userinfo.get("name")
-                or "Unknown")
 
     # ═══════════════════════════════════════════════════════════
     # Authorisation
@@ -220,8 +212,7 @@ class HFStagingPlatform(PlatformProtocol):
             username = session_user
         return username in self._commander_whitelist
 
-    def is_member(self, username: str) -> bool:
-        return username.lower() in [k.lower() for k in self._user_agent_map]
+
 
     def check_relay_permission(self, sender: str, target: str) -> bool:
         """Validate relay authorisation.
@@ -379,35 +370,7 @@ class HFStagingPlatform(PlatformProtocol):
 
     # ── WS identity injection ─────────────────────────────────
 
-    def process_commander_message(
-        self, data: str, username: str, real_name: str, is_commander: bool
-    ) -> tuple[str | None, str | None]:
-        """Inject OAuth identity before forwarding to the agent."""
-        authorized = is_commander or self.is_member(username)
 
-        if not authorized and username != "guest":
-            return (None, "\U0001f512 只读模式: 请登录后再发送消息")
-
-        ident = f"{real_name} (oauth:{username})" if real_name != "Guest" else "Guest"
-        sender_id = f"oauth:{username}" if authorized else "guest"
-
-        try:
-            envelope = json.loads(data)
-        except Exception:
-            envelope = {}
-        if not isinstance(envelope, dict):
-            envelope = {}
-
-        envelope["sender_name"] = ident
-        envelope["sender_id"] = sender_id
-
-        if is_commander:
-            old_content = envelope.get("content", "")
-            prefix = f"[{real_name}]: "
-            if isinstance(old_content, str) and not old_content.startswith(prefix):
-                envelope["content"] = prefix + old_content
-
-        return (json.dumps(envelope), None)
 
     # instance_path() inherited from base (reads data_root from squad_config.json)
 

@@ -286,8 +286,7 @@ class ModelScopePlatform(PlatformProtocol):
         )
         return username in self._commander_whitelist
 
-    def is_member(self, username: str) -> bool:
-        return username.lower() in [k.lower() for k in self._user_agent_map]
+
 
     def check_relay_permission(self, sender: str, target: str) -> bool:
         if sender in self._commander_whitelist:
@@ -446,37 +445,7 @@ class ModelScopePlatform(PlatformProtocol):
     # WebSocket commander message — identity injection + guest blocking
     # ═══════════════════════════════════════════════════════════════
 
-    def process_commander_message(
-        self, data: str, username: str, real_name: str, is_commander: bool
-    ):
-        """Inject OAuth identity, block unauthorized guests."""
-        import json as _json
 
-        authorized = is_commander or self.is_member(username)
-
-        if not authorized:
-            return (None, "🔒 只读模式: 请登录后再发送消息")
-
-        ident = f"{real_name} (oauth:{username})" if real_name != "Guest" else "Guest"
-        sender_id = f"oauth:{username}" if authorized else "guest"
-
-        try:
-            envelope = _json.loads(data)
-        except Exception:
-            envelope = {}
-        if not isinstance(envelope, dict):
-            envelope = {}
-
-        envelope["sender_name"] = ident
-        envelope["sender_id"] = sender_id
-
-        if is_commander:
-            old_content = envelope.get("content", "")
-            prefix = f"[{real_name}]: "
-            if isinstance(old_content, str) and not old_content.startswith(prefix):
-                envelope["content"] = prefix + old_content
-
-        return (_json.dumps(envelope), None)
 
     # ═══════════════════════════════════════════════════════════════
     # Entrypoint setup — env unfreeze, dataset pull, template copy
