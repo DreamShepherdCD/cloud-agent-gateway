@@ -338,10 +338,17 @@ def _detect_engine(engine: str) -> bool:
 
 
 def _detect_squad() -> bool:
-    """Check if Squad Legion overlay is present."""
-    if os.environ.get("SQUAD_LEGION") == "true":
-        return True
-    if os.environ.get("CLOUD_DEMO_MODE") == "1":
-        return False
-    # Transitional fallback — remove once all Squad spaces set SQUAD_LEGION=true
-    return os.path.exists("/app/deploy/huggingface/gatekeeper.py")
+    """Check if Squad Legion overlay is present.
+
+    The authoritative signal is the existence of ``squad_config.json``,
+    which is only deployed on Squad spaces (copied from the platform-specific
+    seed by ``launch.sh`` before ``cloud-gateway-setup`` runs).
+    Cloud Demo spaces have no launch.sh and no squad_config.json.
+    """
+    # squad_config.json is seeded to /app/squad_config.json by launch.sh
+    # Persistent copy lives at {MOUNT_PATH}/squad_config.json
+    for p in ("/app/squad_config.json",
+              os.path.join(os.environ.get("MOUNT_PATH", "/data"), "squad_config.json")):
+        if os.path.exists(p):
+            return True
+    return False
