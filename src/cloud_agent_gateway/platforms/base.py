@@ -241,41 +241,165 @@ class CloudPlatformProtocol(Protocol):
         """Filesystem path for a named instance's persistent workspace."""
         return f"{self.data_root}/instances/{name}"
 
-    # ── Persistent storage writes ──
+    # ── Persistent storage ──
+    #  ├── Path helpers
+    #  ├── Read:  config / credential / sidebar-state / session
+    #  ├── Write: config / credential / sidebar-state / session / webui-transcript
+    #  ├── Delete: session (+ transcript)
+    #  └── Hook:  _on_persistent_write (platform-specific sync)
+
+    # ── Path helpers ──
+
+    def _config_path(self, agent_id: str) -> str:
+        return f"{self.instance_path(agent_id)}/config.json"
+
+    def _credential_path(self, agent_id: str, channel: str) -> str:
+        return f"{self.instance_path(agent_id)}/channels/{channel}/account.json"
+
+    def _sidebar_path(self, agent_id: str) -> str:
+        return f"{self.instance_path(agent_id)}/webui/sidebar-state.json"
+
+    def _session_path(self, agent_id: str, session_key: str) -> str:
+        """Path to workspace session transcript (nanobot SessionManager source)."""
+        return f"{self.instance_path(agent_id)}/workspace/sessions/websocket_{session_key}.jsonl"
+
+    def _webui_transcript_path(self, agent_id: str, session_key: str) -> str:
+        """Path to webui transcript (served by GET /api/sessions/<key>/webui-thread)."""
+        return f"{self.instance_path(agent_id)}/webui/websocket_{session_key}.jsonl"
+
+    # ── Read ──
+
+    def read_config(self, agent_id: str) -> dict:
+        """Read agent config.json."""
+        import json
+        cfg_path = self._config_path(agent_id)
+        try:
+            with open(cfg_path) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def read_credential(self, agent_id: str, channel: str) -> dict:
+        """Read channel credential (account.json)."""
+        import json
+        cred_path = self._credential_path(agent_id, channel)
+        try:
+            with open(cred_path) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def read_sidebar_state(self, agent_id: str) -> dict:
+        """Read webui/sidebar-state.json."""
+        import json
+        sp = self._sidebar_path(agent_id)
+        try:
+            with open(sp) as f:
+                return json.load(f) or {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def read_session(self, agent_id: str, session_key: str) -> list[dict]:
+        """Read all lines from a workspace session jsonl file."""
+        import json
+        sp = self._session_path(agent_id, session_key)
+        lines: list[dict] = []
+        try:
+            with open(sp) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        lines.append(json.loads(line))
+        except FileNotFoundError:
+            pass
+        return lines
+
+    # ── Write ──
 
     def write_credential(self, agent_id: str, channel: str, data: dict) -> None:
         """Write channel credential (account.json) to persistent storage.
 
-        Implementations may override ``_on_persistent_write`` to add
-        platform-specific sync (e.g. push to dataset git repo).
+        Calls ``_on_persistent_write`` for platform-specific sync.
         """
         import json
-        account_dir = f"{self.instance_path(agent_id)}/channels/{channel}"
-        os.makedirs(account_dir, exist_ok=True)
-        account_path = f"{account_dir}/account.json"
-        with open(account_path, "w") as f:
+        cred_path = self._credential_path(agent_id, channel)
+        os.makedirs(os.path.dirname(cred_path), exist_ok=True)
+        with open(cred_path, "w") as f:
             json.dump(data, f)
-        os.chmod(account_path, 0o600)
+        os.chmod(cred_path, 0o600)
         self._on_persistent_write()
 
     def write_config(self, agent_id: str, config: dict) -> None:
         """Write agent config.json to persistent storage.
 
-        Implementations may override ``_on_persistent_write`` to add
-        platform-specific sync (e.g. push to dataset git repo).
+        Calls ``_on_persistent_write`` for platform-specific sync.
         """
         import json
-        cfg_path = f"{self.instance_path(agent_id)}/config.json"
+        cfg_path = self._config_path(agent_id)
         with open(cfg_path, "w") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
         os.chmod(cfg_path, 0o600)
         self._on_persistent_write()
 
+    def write_sidebar_state(self, agent_id: str, state: dict) -> None:
+        """Write webui/sidebar-state.json.
+
+        Calls ``_on_persistent_write`` for platform-specific sync.
+        """
+        import json
+        sp = self._sidebar_path(agent_id)
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        with open(sp, "w") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        self._on_persistent_write()
+
+    def write_session(self, agent_id: str, session_key: str, lines: list[dict]) -> None:
+        """Write a workspace session jsonl file (overwrite).
+
+        Each dict in *lines* is serialised as one JSON line.
+        Calls ``_on_persistent_write`` for platform-specific sync.
+        """
+        import json
+        sp = self._session_path(agent_id, session_key)
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        with open(sp, "w") as f:
+            for obj in lines:
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        self._on_persistent_write()
+
+    def write_webui_transcript(self, agent_id: str, session_key: str, lines: list[dict]) -> None:
+        """Write a webui transcript jsonl file (overwrite).
+
+        Calls ``_on_persistent_write`` for platform-specific sync.
+        """
+        import json
+        tp = self._webui_transcript_path(agent_id, session_key)
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        with open(tp, "w") as f:
+            for obj in lines:
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        self._on_persistent_write()
+
+    # ── Delete ──
+
+    def delete_session(self, agent_id: str, session_key: str) -> None:
+        """Delete both workspace session jsonl and webui transcript."""
+        for _p in (self._session_path(agent_id, session_key),
+                    self._webui_transcript_path(agent_id, session_key)):
+            try:
+                os.unlink(_p)
+            except FileNotFoundError:
+                pass
+        self._on_persistent_write()
+
+    # ── Hook ──
+
     def _on_persistent_write(self) -> None:
-        """Hook: called after ``write_credential`` or ``write_config``.
+        """Hook: called after any persistent write.
 
         Subclasses that need to sync persistent storage with an external
-        view (e.g. ModelScope dataset) override this method.
+        view (e.g. ModelScope dataset git push) override this method.
         Default: no-op.
         """
         pass
