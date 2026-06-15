@@ -943,7 +943,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                     if _pinned_cid:
                         # Existing pinned binding chat → redirect to it
                         current_chat_id = _pinned_cid
-                        await upstream.send(_json.dumps({
+                        await upstream.send(json.dumps({
                             "type": "attach",
                             "chat_id": _pinned_cid,
                             "sender_id": f"oauth:{username}",
@@ -964,7 +964,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                             _log(f"WS setup_title: client didn't create chat in 4s, will create one")
 
                         if not current_chat_id:
-                            await upstream.send(_json.dumps({
+                            await upstream.send(json.dumps({
                                 "type": "new_chat",
                                 "chat_id": str(uuid.uuid4()),
                                 "sender_id": f"oauth:{username}",
