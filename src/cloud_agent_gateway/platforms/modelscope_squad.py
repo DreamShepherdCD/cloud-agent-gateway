@@ -203,10 +203,41 @@ class ModelScopePlatform(PlatformProtocol):
         dst = f"{mirror}/instances"
 
         try:
+            # Ensure mirror .gitignore excludes runtime noise
+            gi_path = f"{mirror}/.gitignore"
+            if not os.path.isfile(gi_path):
+                with open(gi_path, "w") as f:
+                    f.write("# Runtime noise — excluded from dataset sync\n")
+                    f.write("instances/*/workspace/sessions/\n")
+                    f.write("instances/*/workspace/memory/\n")
+                    f.write("instances/*/workspace/logs/\n")
+                    f.write("instances/*/workspace/cron/\n")
+                    f.write("instances/*/workspace/repos/\n")
+                    f.write("instances/*/workspace/docs/\n")
+                    f.write("__pycache__/\n")
+                    f.write("*.pyc\n")
+
             # Mirror instances/ into dataset clone
             if os.path.isdir(dst):
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
+                if os.path.isdir(f"{dst}/workspace"):
+                    shutil.rmtree(dst)
+                else:
+                    # Partial clean: only remove known subdirs to avoid
+                    # disrupting dataset-only files at mirror root
+                    for sub in os.listdir(dst):
+                        sub_p = os.path.join(dst, sub)
+                        if os.path.isdir(sub_p):
+                            shutil.rmtree(sub_p)
+                        else:
+                            os.unlink(sub_p)
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+
+            # Strip runtime noise from mirror before git add
+            for agent_dir in os.listdir(dst):
+                agent_ws = os.path.join(dst, agent_dir, "workspace")
+                if os.path.isdir(agent_ws):
+                    for noise in ("sessions", "memory", "logs", "cron", "repos", "docs"):
+                        shutil.rmtree(os.path.join(agent_ws, noise), ignore_errors=True)
 
             # Git commit + push
             subprocess.run(["git", "add", "-A"], cwd=mirror,
@@ -216,10 +247,21 @@ class ModelScopePlatform(PlatformProtocol):
                 logger.debug("_do_sync: no changes to push")
                 return
 
-            subprocess.run(["git", "commit", "-m", "sync: instances → dataset mirror"],
-                           cwd=mirror, capture_output=True, timeout=10)
-            subprocess.run(["git", "push", "origin", "HEAD:master"],
-                           cwd=mirror, capture_output=True, timeout=30)
+            result = subprocess.run(
+                ["git", "commit", "-m", "sync: instances → dataset mirror"],
+                cwd=mirror, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                logger.warning("_do_sync: git commit failed: %s",
+                               result.stderr.decode(errors="replace")[-300:])
+                return
+
+            result = subprocess.run(
+                ["git", "push", "origin", "HEAD:master"],
+                cwd=mirror, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                logger.warning("_do_sync: git push failed: %s",
+                               result.stderr.decode(errors="replace")[-300:])
+                return
             logger.info("_do_sync: pushed to dataset mirror")
 
             # Re-check dirty in case another write happened during sync
@@ -593,6 +635,7 @@ class ModelScopePlatform(PlatformProtocol):
                     except ValueError:
                         continue
                     if name.startswith(("NANOBOT_TOKEN", "NANOBOT_PEER_",
+                                        "NANOBOT_Staging",
                                         "SQUAD_LEGION", "SQUAD_RELAY_TOKEN")):
                         exports.append(f"export {name}='{value}'")
                         _os.environ[name] = value
@@ -654,9 +697,19 @@ class ModelScopePlatform(PlatformProtocol):
         else:
             _log("⚠️ [Template] 无模板可用 — agent 将跳过")
 
-        # 5. Deep-merge agent configs from dataset (dataset authoritative)
-        #    Merges dataset config on top of instances config — dataset wins for
-        #    structural keys, but existing channel credentials are preserved.
+        # 5. Deep-merge agent configs: dataset is authoritative, instances-only keys preserved.
+        #    This replaces the old "skip if exists" logic so that config updates in the dataset
+        #    (new channels, settings) propagate while per-agent credentials (token, app_id) survive.
+        def _deep_merge(base: dict, override: dict) -> dict:
+            """Merge override into base. Dataset (override) wins for scalars;
+            for nested dicts (e.g. channels), merge recursively; lists are replaced."""
+            for key, value in override.items():
+                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                    _deep_merge(base[key], value)
+                else:
+                    base[key] = value
+            return base
+
         for item in _os.listdir(instances_src):
             item_path = _os.path.join(instances_src, item)
             cfg_file = _os.path.join(item_path, "config.json")
