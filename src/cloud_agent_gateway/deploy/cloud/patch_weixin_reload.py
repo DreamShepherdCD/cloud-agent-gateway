@@ -131,6 +131,28 @@ def apply_patch(source: str) -> str:
     )
     source = _replace_once(source, _anchor_start, _replacement_start)
 
+    # ── Patch 5: Use NANOBOT_ACCOUNT_BASE in _get_state_dir ────────
+    # When NANOBOT_ACCOUNT_BASE is set (Staging multi-agent), use
+    # it as the base path for account.json so it matches what
+    # gatekeeper's PersistentStorageProtocol writes.
+    _anchor_state_dir = (
+        "        if self.config.state_dir:\n"
+        '            d = Path(self.config.state_dir).expanduser()\n'
+        "        else:\n"
+        '            d = get_runtime_subdir("weixin")\n'
+    )
+    _replacement_state_dir = (
+        "        if self.config.state_dir:\n"
+        '            d = Path(self.config.state_dir).expanduser()\n'
+        "        else:\n"
+        '            _account_base = os.environ.get("NANOBOT_ACCOUNT_BASE")\n'
+        "            if _account_base:\n"
+        '                d = Path(_account_base) / "weixin"\n'
+        "            else:\n"
+        '                d = get_runtime_subdir("weixin")\n'
+    )
+    source = _replace_once(source, _anchor_state_dir, _replacement_state_dir)
+
     return source
 
 
@@ -141,6 +163,7 @@ def verify_patch(source: str) -> None:
         "headers=self._make_headers(auth=auth), timeout=timeout",
         "Waiting for account.json from web bind",
         "(httpx.Timeout assignment removed",
+        'os.environ.get("NANOBOT_ACCOUNT_BASE")',  # _get_state_dir patch
         "self._load_state()",  # after asyncio.sleep
     ]
     for m in markers:
