@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
+from cloud_agent_gateway.platforms.modelscope import ModelScopeDatasetSyncMixin
 
 logger = logging.getLogger("gatekeeper.modelscope")
 
@@ -58,12 +59,14 @@ def _get_oauth_client() -> OAuth:
 # ═══════════════════════════════════════════════════════════════
 
 
-class ModelScopePlatform(PlatformProtocol):
-    """Platform implementation for ModelScope Studio."""
+class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
+    """Platform implementation for ModelScope Studio (Squad)."""
 
     name = "modelscope"
+    _dataset_repo = "Stone2006/nanobot-multi-agent-nightly-data"
 
     def __init__(self):
+        super().__init__()
         self._webui_agent: str = ""
         self._squad_roster: dict[str, dict] = {}
         self._commander_whitelist: list[str] = []
@@ -113,168 +116,12 @@ class ModelScopePlatform(PlatformProtocol):
             self._webui_agent = webui_agent or os.environ.get("WEBUI_AGENT", "neo")
 
         self._squad_roster = squad_roster or {}
-        # ── Persistent storage sync state ──
-        self._sync_ready = False          # set True after first successful clone
-        self._sync_lock = None            # threading.Lock (lazy)
-        self._sync_dirty = False          # pending changes to push
-        self._sync_thread = None          # background sync thread
         logger.info(
             "ModelScope config: webui=%s  whitelist=%s  peers=%s",
             self._webui_agent,
             self._commander_whitelist,
             list(self._squad_roster.keys()),
         )
-
-    # ── Persistent storage sync (mirrors /mnt/workspace → ModelScope dataset) ──
-
-    def _ensure_sync_ready(self) -> None:
-        """Lazily clone dataset mirror to /mnt/workspace/dataset-mirror/."""
-        if self._sync_ready:
-            return
-        import subprocess
-        mirror = "/mnt/workspace/dataset-mirror"
-        repo = "Stone2006/nanobot-multi-agent-nightly-data"
-        ms_token = os.environ.get("NANOBOT_Staging_modelscope_TOKEN", "")
-        if not ms_token:
-            try:
-                with open("/proc/1/environ", "rb") as f:
-                    for item in f.read().split(b"\0"):
-                        if b"NANOBOT_Staging_modelscope_TOKEN" in item:
-                            ms_token = item.decode("utf-8", errors="replace").split("=", 1)[1]
-                            break
-            except Exception:
-                pass
-        if not ms_token:
-            logger.warning("_ensure_sync_ready: no MS token, dataset sync disabled")
-            return
-        url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{repo}.git"
-        if os.path.isdir(f"{mirror}/.git"):
-            # Already cloned — fast-forward pull
-            try:
-                subprocess.run(["git", "fetch", "origin", "master"], cwd=mirror,
-                               capture_output=True, timeout=30)
-                subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=mirror,
-                               capture_output=True, timeout=10)
-                logger.info("_ensure_sync_ready: pulled latest from dataset")
-            except Exception as exc:
-                logger.warning("_ensure_sync_ready: pull failed: %s", exc)
-        else:
-            import shutil
-            shutil.rmtree(mirror, ignore_errors=True)
-            try:
-                subprocess.run(["git", "clone", "--depth=1", url, mirror],
-                               check=True, capture_output=True, timeout=60)
-                logger.info("_ensure_sync_ready: cloned dataset mirror")
-            except Exception as exc:
-                logger.warning("_ensure_sync_ready: clone failed: %s", exc)
-                return
-        self._sync_ready = True
-
-    def _on_persistent_write(self) -> None:
-        """Schedule a background sync to the dataset mirror.
-
-        Multiple rapid writes collapse into a single sync via debounce.
-        """
-        import threading
-        if self._sync_lock is None:
-            self._sync_lock = threading.Lock()
-        with self._sync_lock:
-            if self._sync_thread and self._sync_thread.is_alive():
-                # A sync is already running — mark dirty so it runs again
-                self._sync_dirty = True
-                return
-            self._sync_dirty = False
-        self._sync_thread = threading.Thread(target=self._do_sync, daemon=True)
-        self._sync_thread.start()
-
-    def _do_sync(self) -> None:
-        """Mirror /mnt/workspace/instances/ into dataset clone and push."""
-        import shutil
-        import subprocess
-        import time
-
-        time.sleep(1)  # debounce window for batched writes
-        self._ensure_sync_ready()
-        if not self._sync_ready:
-            return
-
-        mirror = "/mnt/workspace/dataset-mirror"
-        src = "/mnt/workspace/instances"
-        dst = f"{mirror}/instances"
-
-        try:
-            # Ensure mirror .gitignore excludes runtime noise
-            gi_path = f"{mirror}/.gitignore"
-            if not os.path.isfile(gi_path):
-                with open(gi_path, "w") as f:
-                    f.write("# Runtime noise — excluded from dataset sync\n")
-                    f.write("instances/*/workspace/sessions/\n")
-                    f.write("instances/*/workspace/memory/\n")
-                    f.write("instances/*/workspace/logs/\n")
-                    f.write("instances/*/workspace/cron/\n")
-                    f.write("instances/*/workspace/repos/\n")
-                    f.write("instances/*/workspace/docs/\n")
-                    f.write("__pycache__/\n")
-                    f.write("*.pyc\n")
-
-            # Mirror instances/ into dataset clone
-            if os.path.isdir(dst):
-                if os.path.isdir(f"{dst}/workspace"):
-                    shutil.rmtree(dst)
-                else:
-                    # Partial clean: only remove known subdirs to avoid
-                    # disrupting dataset-only files at mirror root
-                    for sub in os.listdir(dst):
-                        sub_p = os.path.join(dst, sub)
-                        if os.path.isdir(sub_p):
-                            shutil.rmtree(sub_p)
-                        else:
-                            os.unlink(sub_p)
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-
-            # Strip runtime noise from mirror before git add
-            for agent_dir in os.listdir(dst):
-                agent_ws = os.path.join(dst, agent_dir, "workspace")
-                if os.path.isdir(agent_ws):
-                    for noise in ("sessions", "memory", "logs", "cron", "repos", "docs"):
-                        shutil.rmtree(os.path.join(agent_ws, noise), ignore_errors=True)
-
-            # Git commit + push
-            subprocess.run(["git", "add", "-A"], cwd=mirror,
-                           capture_output=True, timeout=10)
-            r = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=mirror, timeout=5)
-            if r.returncode == 0:
-                logger.debug("_do_sync: no changes to push")
-                return
-
-            result = subprocess.run(
-                ["git", "commit", "-m", "sync: instances → dataset mirror"],
-                cwd=mirror, capture_output=True, timeout=10)
-            if result.returncode != 0:
-                logger.warning("_do_sync: git commit failed: %s",
-                               result.stderr.decode(errors="replace")[-300:])
-                return
-
-            result = subprocess.run(
-                ["git", "push", "origin", "HEAD:master"],
-                cwd=mirror, capture_output=True, timeout=30)
-            if result.returncode != 0:
-                logger.warning("_do_sync: git push failed: %s",
-                               result.stderr.decode(errors="replace")[-300:])
-                return
-            logger.info("_do_sync: pushed to dataset mirror")
-
-            # Re-check dirty in case another write happened during sync
-            if self._sync_lock:
-                with self._sync_lock:
-                    if self._sync_dirty:
-                        self._sync_dirty = False
-                        # Re-run to catch subsequent writes
-                        import threading
-                        self._sync_thread = threading.Thread(target=self._do_sync, daemon=True)
-                        self._sync_thread.start()
-        except Exception as exc:
-            logger.warning("_do_sync: sync failed: %s", exc)
 
     # ═══════════════════════════════════════════════════════════════
     # OAuth

@@ -53,10 +53,187 @@ def _get_oauth_client() -> OAuth:
     return oauth
 
 
-class ModelScopePlatform(CloudPlatformProtocol):
-    """Platform implementation for ModelScope Studio."""
+class ModelScopeDatasetSyncMixin:
+    """Mixin: mirror persistent storage to a ModelScope dataset via git.
+
+    Subclasses must set class attributes:
+      - ``_dataset_repo``: ``"owner/repo-name"`` on ModelScope
+      - ``_dataset_token_env``: env var name holding the MS access token
+
+    Optional overrides:
+      - ``_mirror_path``: local clone path (default ``/mnt/workspace/dataset-mirror``)
+      - ``_source_path``: directory to mirror (default ``/mnt/workspace/instances``)
+    """
+
+    _dataset_repo: str = ""
+    _dataset_token_env: str = "NANOBOT_Staging_modelscope_TOKEN"
+    _mirror_path: str = "/mnt/workspace/dataset-mirror"
+    _source_path: str = "/mnt/workspace/instances"
+
+    _sync_ready: bool = False
+    _sync_lock = None
+    _sync_dirty: bool = False
+    _sync_thread = None
+
+    # ──────────────────────────────────────────────────────
+    # Internal helpers
+    # ──────────────────────────────────────────────────────
+
+    def _get_ms_token(self) -> str:
+        """Read the ModelScope access token from env or /proc/1/environ."""
+        token = os.environ.get(self._dataset_token_env, "")
+        if not token:
+            try:
+                with open("/proc/1/environ", "rb") as f:
+                    for item in f.read().split(b"\0"):
+                        needle = self._dataset_token_env.encode()
+                        if needle in item:
+                            token = item.decode("utf-8", errors="replace").split("=", 1)[1]
+                            break
+            except Exception:
+                pass
+        return token
+
+    # ──────────────────────────────────────────────────────
+    # Persistent storage sync (read -> mirror -> git push)
+    # ──────────────────────────────────────────────────────
+
+    def _ensure_sync_ready(self) -> None:
+        """Lazily clone dataset mirror to ``_mirror_path``."""
+        if self._sync_ready:
+            return
+        import subprocess as _sp
+        ms_token = self._get_ms_token()
+        if not ms_token:
+            logger.warning("_ensure_sync_ready: no MS token, dataset sync disabled")
+            return
+        url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{self._dataset_repo}.git"
+        mirror = self._mirror_path
+        if os.path.isdir(f"{mirror}/.git"):
+            try:
+                _sp.run(["git", "fetch", "origin", "master"], cwd=mirror,
+                        capture_output=True, timeout=30)
+                _sp.run(["git", "reset", "--hard", "origin/master"], cwd=mirror,
+                        capture_output=True, timeout=10)
+                logger.info("_ensure_sync_ready: pulled latest from dataset")
+            except Exception as exc:
+                logger.warning("_ensure_sync_ready: pull failed: %s", exc)
+        else:
+            import shutil as _sh
+            _sh.rmtree(mirror, ignore_errors=True)
+            try:
+                _sp.run(["git", "clone", "--depth=1", url, mirror],
+                        check=True, capture_output=True, timeout=60)
+                logger.info("_ensure_sync_ready: cloned dataset mirror")
+            except Exception as exc:
+                logger.warning("_ensure_sync_ready: clone failed: %s", exc)
+                return
+        self._sync_ready = True
+
+    def _on_persistent_write(self) -> None:
+        """Schedule a background sync to the dataset mirror.
+
+        Multiple rapid writes collapse into a single sync via debounce.
+        """
+        import threading as _th
+        if self._sync_lock is None:
+            self._sync_lock = _th.Lock()
+        with self._sync_lock:
+            if self._sync_thread and self._sync_thread.is_alive():
+                self._sync_dirty = True
+                return
+            self._sync_dirty = False
+        self._sync_thread = _th.Thread(target=self._do_sync, daemon=True)
+        self._sync_thread.start()
+
+    def _do_sync(self) -> None:
+        """Mirror ``_source_path`` into dataset clone and push."""
+        import shutil as _sh
+        import subprocess as _sp
+        import time as _time
+        import threading as _th
+
+        _time.sleep(1)
+        self._ensure_sync_ready()
+        if not self._sync_ready:
+            return
+
+        mirror = self._mirror_path
+        src = self._source_path
+        dst = f"{mirror}/instances"
+
+        try:
+            gi_path = f"{mirror}/.gitignore"
+            if not os.path.isfile(gi_path):
+                with open(gi_path, "w") as f:
+                    f.write("# Runtime noise\n")
+                    f.write("instances/*/workspace/sessions/\n")
+                    f.write("instances/*/workspace/memory/\n")
+                    f.write("instances/*/workspace/logs/\n")
+                    f.write("instances/*/workspace/cron/\n")
+                    f.write("instances/*/workspace/repos/\n")
+                    f.write("instances/*/workspace/docs/\n")
+                    f.write("__pycache__/\n")
+                    f.write("*.pyc\n")
+
+            if os.path.isdir(dst):
+                if os.path.isdir(f"{dst}/workspace"):
+                    _sh.rmtree(dst)
+                else:
+                    for sub in os.listdir(dst):
+                        sub_p = os.path.join(dst, sub)
+                        if os.path.isdir(sub_p):
+                            _sh.rmtree(sub_p)
+                        else:
+                            os.unlink(sub_p)
+            _sh.copytree(src, dst, dirs_exist_ok=True)
+
+            for agent_dir in os.listdir(dst):
+                agent_ws = os.path.join(dst, agent_dir, "workspace")
+                if os.path.isdir(agent_ws):
+                    for noise in ("sessions", "memory", "logs", "cron", "repos", "docs"):
+                        _sh.rmtree(os.path.join(agent_ws, noise), ignore_errors=True)
+
+            _sp.run(["git", "add", "-A"], cwd=mirror,
+                    capture_output=True, timeout=10)
+            r = _sp.run(["git", "diff", "--cached", "--quiet"], cwd=mirror, timeout=5)
+            if r.returncode == 0:
+                logger.debug("_do_sync: no changes to push")
+                return
+
+            result = _sp.run(
+                ["git", "commit", "-m", "sync: instances -> dataset mirror"],
+                cwd=mirror, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                logger.warning("_do_sync: git commit failed: %s",
+                               result.stderr.decode(errors="replace")[-300:])
+                return
+
+            result = _sp.run(
+                ["git", "push", "origin", "HEAD:master"],
+                cwd=mirror, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                logger.warning("_do_sync: git push failed: %s",
+                               result.stderr.decode(errors="replace")[-300:])
+                return
+            logger.info("_do_sync: pushed to dataset mirror")
+
+            if self._sync_lock:
+                with self._sync_lock:
+                    if self._sync_dirty:
+                        self._sync_dirty = False
+                        self._sync_thread = _th.Thread(target=self._do_sync, daemon=True)
+                        self._sync_thread.start()
+        except Exception as exc:
+            logger.warning("_do_sync: sync failed: %s", exc)
+
+
+class ModelScopePlatform(ModelScopeDatasetSyncMixin, CloudPlatformProtocol):
+    """Platform implementation for ModelScope Studio Cloud Demo."""
 
     name = "modelscope"
+    _dataset_repo = "DreamShepherd/ms-nanobot-cloud-demo-data"
+    _dataset_token_env = "ms_nanobot_cloud_demo"
 
     # ── Filesystem ──
 
