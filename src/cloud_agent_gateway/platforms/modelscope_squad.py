@@ -64,6 +64,7 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
 
     name = "modelscope"
     _dataset_repo = "Stone2006/nanobot-multi-agent-nightly-data"
+    _dataset_token_env = "NANOBOT_Staging_modelscope_TOKEN"
 
     def __init__(self):
         super().__init__()

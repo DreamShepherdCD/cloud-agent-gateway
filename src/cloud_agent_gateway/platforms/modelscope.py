@@ -104,10 +104,6 @@ class ModelScopeDatasetSyncMixin:
             return
         import subprocess as _sp
         ms_token = self._get_ms_token()
-        if not ms_token:
-            logger.warning("_ensure_sync_ready: no MS token, dataset sync disabled")
-            return
-        url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{self._dataset_repo}.git"
         mirror = self._mirror_path
         import shutil as _sh
         need_clone = True
@@ -128,9 +124,13 @@ class ModelScopeDatasetSyncMixin:
                 except Exception as exc:
                     logger.warning("_ensure_sync_ready: pull failed: %s", exc)
         if need_clone:
+            if not ms_token:
+                logger.warning("_ensure_sync_ready: no MS token, dataset sync disabled")
+                return
+            clone_url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{self._dataset_repo}.git"
             _sh.rmtree(mirror, ignore_errors=True)
             try:
-                _sp.run(["git", "clone", "--depth=1", url, mirror],
+                _sp.run(["git", "clone", "--depth=1", clone_url, mirror],
                         check=True, capture_output=True, timeout=60)
                 logger.info("_ensure_sync_ready: cloned dataset mirror")
             except Exception as exc:
