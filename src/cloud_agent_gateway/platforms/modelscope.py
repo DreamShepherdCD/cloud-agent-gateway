@@ -75,6 +75,11 @@ class ModelScopeDatasetSyncMixin:
     _sync_dirty: bool = False
     _sync_thread = None
 
+    # Dataset pull timer (dataset → container)
+    _pull_interval: int = 60  # seconds between checks
+    _pull_timer_started: bool = False
+    _git_op_lock = None  # serialise git working-tree ops
+
     # ──────────────────────────────────────────────────────
     # Internal helpers
     # ──────────────────────────────────────────────────────
@@ -137,6 +142,141 @@ class ModelScopeDatasetSyncMixin:
                 logger.warning("_ensure_sync_ready: clone failed: %s", exc)
                 return
         self._sync_ready = True
+        if not self._pull_timer_started:
+            self._start_dataset_pull_timer()
+
+    # ──────────────────────────────────────────────────────
+    # Dataset pull timer (dataset → container)
+    # ──────────────────────────────────────────────────────
+
+    def _start_dataset_pull_timer(self) -> None:
+        """Start a daemon thread that periodically polls the dataset for updates.
+
+        When new commits are detected the mirror is fast-forwarded and
+        :meth:`_merge_dataset_configs_to_instances` applies config changes to
+        the live instances.
+        """
+        import threading as _th
+        import time as _time
+
+        self._pull_timer_started = True
+
+        def _loop():
+            _time.sleep(self._pull_interval)
+            while True:
+                try:
+                    self._check_and_apply_dataset_updates()
+                except Exception as exc:
+                    logger.warning("dataset pull timer: %s", exc)
+                _time.sleep(self._pull_interval)
+
+        t = _th.Thread(target=_loop, daemon=True, name="dataset-pull-timer")
+        t.start()
+        logger.info("dataset pull timer started (interval=%ss)", self._pull_interval)
+
+    def _check_and_apply_dataset_updates(self) -> None:
+        """Fetch origin/master; if it advanced, pull and merge configs."""
+        if not self._sync_ready:
+            return
+
+        import subprocess as _sp
+        mirror = self._mirror_path
+
+        # Current HEAD
+        r = _sp.run(["git", "rev-parse", "HEAD"], cwd=mirror,
+                    capture_output=True, timeout=5)
+        if r.returncode != 0:
+            return
+        old_head = r.stdout.decode().strip()
+
+        # Fetch remote
+        r = _sp.run(["git", "fetch", "origin", "master"], cwd=mirror,
+                    capture_output=True, timeout=30)
+        if r.returncode != 0:
+            logger.warning("dataset pull timer: fetch failed")
+            return
+
+        # Compare
+        r = _sp.run(["git", "rev-parse", "origin/master"], cwd=mirror,
+                    capture_output=True, timeout=5)
+        new_head = r.stdout.decode().strip()
+
+        if old_head == new_head:
+            return  # nothing new
+
+        logger.info("dataset pull timer: new commits (%s → %s), pulling…",
+                    old_head[:8], new_head[:8])
+
+        # Serialise with _do_sync
+        import threading as _th
+        if self._git_op_lock is None:
+            self._git_op_lock = _th.Lock()
+        with self._git_op_lock:
+            # Apply incoming changes to mirror working tree
+            r = _sp.run(["git", "merge", "origin/master", "--no-edit"],
+                        cwd=mirror, capture_output=True, timeout=10)
+            if r.returncode != 0:
+                logger.warning("dataset pull timer: merge failed: %s",
+                               r.stderr.decode(errors="replace")[-200:])
+                # Attempt to reset to clean state
+                _sp.run(["git", "merge", "--abort"], cwd=mirror,
+                        capture_output=True, timeout=5)
+                return
+
+        # Merge config.json files into live instances
+        self._merge_dataset_configs_to_instances()
+
+    def _merge_dataset_configs_to_instances(self) -> None:
+        """Deep-merge config.json from dataset mirror → live instances.
+
+        Dataset values are authoritative for scalars; nested dicts (channels)
+        are merged recursively so per-agent credentials survive.
+        """
+        import json as _json
+
+        mirror = self._mirror_path
+        instances_dst = self._source_path
+        mirror_instances = f"{mirror}/instances"
+
+        if not os.path.isdir(mirror_instances):
+            return
+
+        def _deep_merge(base: dict, override: dict) -> dict:
+            for key, value in override.items():
+                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                    _deep_merge(base[key], value)
+                else:
+                    base[key] = value
+            return base
+
+        for item in os.listdir(mirror_instances):
+            if item in ("_template", ".git"):
+                continue
+            ds_cfg_path = f"{mirror_instances}/{item}/config.json"
+            if not os.path.isfile(ds_cfg_path):
+                continue
+
+            dst_cfg = f"{instances_dst}/{item}/config.json"
+            if not os.path.isfile(dst_cfg):
+                continue
+
+            try:
+                with open(ds_cfg_path) as f:
+                    ds_cfg = _json.load(f)
+                with open(dst_cfg) as f:
+                    inst_cfg = _json.load(f)
+
+                merged = _deep_merge(inst_cfg, ds_cfg)
+                if merged != inst_cfg:
+                    with open(dst_cfg, "w") as f:
+                        _json.dump(merged, f, indent=2, ensure_ascii=False)
+                    logger.info("dataset pull timer: merged config.json for %s", item)
+            except Exception as exc:
+                logger.warning("dataset pull timer: failed to merge %s: %s", item, exc)
+
+    # ──────────────────────────────────────────────────────
+    # Persistent storage sync (container → dataset)
+    # ──────────────────────────────────────────────────────
 
     def _on_persistent_write(self) -> None:
         """Schedule a background sync to the dataset mirror.
@@ -170,54 +310,65 @@ class ModelScopeDatasetSyncMixin:
         src = self._source_path
         dst = f"{mirror}/instances"
 
-        try:
-            if os.path.isdir(dst):
-                if os.path.isdir(f"{dst}/workspace"):
-                    _sh.rmtree(dst)
-                else:
-                    for sub in os.listdir(dst):
-                        sub_p = os.path.join(dst, sub)
-                        if os.path.isdir(sub_p):
-                            _sh.rmtree(sub_p)
-                        else:
-                            os.unlink(sub_p)
-            _sh.copytree(src, dst, dirs_exist_ok=True)
-            _sh.rmtree(f"{dst}/.git", ignore_errors=True)  # instances is a git repo → would become submodule
-            if os.path.isfile(f"{dst}/.gitignore"):
-                os.unlink(f"{dst}/.gitignore")  # nanobot git store gitignore blocks sync
+        # Serialise with pull timer (lock covers all git working-tree ops)
+        if self._git_op_lock is None:
+            self._git_op_lock = _th.Lock()
 
-            _sp.run(["git", "add", "-A"], cwd=mirror,
-                    capture_output=True, timeout=10)
-            r = _sp.run(["git", "diff", "--cached", "--quiet"], cwd=mirror, timeout=5)
-            if r.returncode == 0:
-                logger.debug("_do_sync: no changes to push")
-                return
+        with self._git_op_lock:
+            try:
+                # Pull latest from dataset so push won't be rejected
+                _sp.run(["git", "fetch", "origin", "master"], cwd=mirror,
+                        capture_output=True, timeout=30)
+                _sp.run(["git", "reset", "--hard", "origin/master"], cwd=mirror,
+                        capture_output=True, timeout=10)
 
-            result = _sp.run(
-                ["git", "commit", "-m", "sync: instances -> dataset mirror"],
-                cwd=mirror, capture_output=True, timeout=10)
-            if result.returncode != 0:
-                logger.warning("_do_sync: git commit failed: %s",
-                               result.stderr.decode(errors="replace")[-300:])
-                return
+                if os.path.isdir(dst):
+                    if os.path.isdir(f"{dst}/workspace"):
+                        _sh.rmtree(dst)
+                    else:
+                        for sub in os.listdir(dst):
+                            sub_p = os.path.join(dst, sub)
+                            if os.path.isdir(sub_p):
+                                _sh.rmtree(sub_p)
+                            else:
+                                os.unlink(sub_p)
+                _sh.copytree(src, dst, dirs_exist_ok=True)
+                _sh.rmtree(f"{dst}/.git", ignore_errors=True)  # instances is a git repo → would become submodule
+                if os.path.isfile(f"{dst}/.gitignore"):
+                    os.unlink(f"{dst}/.gitignore")  # nanobot git store gitignore blocks sync
 
-            result = _sp.run(
-                ["git", "push", "origin", "HEAD:master"],
-                cwd=mirror, capture_output=True, timeout=30)
-            if result.returncode != 0:
-                logger.warning("_do_sync: git push failed: %s",
-                               result.stderr.decode(errors="replace")[-300:])
-                return
-            logger.info("_do_sync: pushed to dataset mirror")
+                _sp.run(["git", "add", "-A"], cwd=mirror,
+                        capture_output=True, timeout=10)
+                r = _sp.run(["git", "diff", "--cached", "--quiet"], cwd=mirror, timeout=5)
+                if r.returncode == 0:
+                    logger.debug("_do_sync: no changes to push")
+                    return
 
-            if self._sync_lock:
-                with self._sync_lock:
-                    if self._sync_dirty:
-                        self._sync_dirty = False
-                        self._sync_thread = _th.Thread(target=self._do_sync, daemon=True)
-                        self._sync_thread.start()
-        except Exception as exc:
-            logger.warning("_do_sync: sync failed: %s", exc)
+                result = _sp.run(
+                    ["git", "commit", "-m", "sync: instances -> dataset mirror"],
+                    cwd=mirror, capture_output=True, timeout=10)
+                if result.returncode != 0:
+                    logger.warning("_do_sync: git commit failed: %s",
+                                   result.stderr.decode(errors="replace")[-300:])
+                    return
+
+                result = _sp.run(
+                    ["git", "push", "origin", "HEAD:master"],
+                    cwd=mirror, capture_output=True, timeout=30)
+                if result.returncode != 0:
+                    logger.warning("_do_sync: git push failed: %s",
+                                   result.stderr.decode(errors="replace")[-300:])
+                    return
+                logger.info("_do_sync: pushed to dataset mirror")
+
+                if self._sync_lock:
+                    with self._sync_lock:
+                        if self._sync_dirty:
+                            self._sync_dirty = False
+                            self._sync_thread = _th.Thread(target=self._do_sync, daemon=True)
+                            self._sync_thread.start()
+            except Exception as exc:
+                logger.warning("_do_sync: sync failed: %s", exc)
 
 
 class ModelScopePlatform(ModelScopeDatasetSyncMixin, CloudPlatformProtocol):
