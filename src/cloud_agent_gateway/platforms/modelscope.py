@@ -109,17 +109,25 @@ class ModelScopeDatasetSyncMixin:
             return
         url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{self._dataset_repo}.git"
         mirror = self._mirror_path
+        import shutil as _sh
+        need_clone = True
         if os.path.isdir(f"{mirror}/.git"):
-            try:
-                _sp.run(["git", "fetch", "origin", "master"], cwd=mirror,
-                        capture_output=True, timeout=30)
-                _sp.run(["git", "reset", "--hard", "origin/master"], cwd=mirror,
-                        capture_output=True, timeout=10)
-                logger.info("_ensure_sync_ready: pulled latest from dataset")
-            except Exception as exc:
-                logger.warning("_ensure_sync_ready: pull failed: %s", exc)
-        else:
-            import shutil as _sh
+            r = _sp.run(["git", "remote", "get-url", "origin"], cwd=mirror,
+                       capture_output=True, timeout=5)
+            if r.returncode != 0:
+                logger.warning("_ensure_sync_ready: broken mirror (no remote), re-cloning")
+                _sh.rmtree(mirror, ignore_errors=True)
+            else:
+                need_clone = False
+                try:
+                    _sp.run(["git", "fetch", "origin", "master"], cwd=mirror,
+                            capture_output=True, timeout=30)
+                    _sp.run(["git", "reset", "--hard", "origin/master"], cwd=mirror,
+                            capture_output=True, timeout=10)
+                    logger.info("_ensure_sync_ready: pulled latest from dataset")
+                except Exception as exc:
+                    logger.warning("_ensure_sync_ready: pull failed: %s", exc)
+        if need_clone:
             _sh.rmtree(mirror, ignore_errors=True)
             try:
                 _sp.run(["git", "clone", "--depth=1", url, mirror],
