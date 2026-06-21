@@ -230,13 +230,14 @@ def apply_patch(source: str) -> str:
         "                    _d = json.loads(_sf.read_text())\n"
         '                    _tk = _d.get("token", "")\n'
         "                    # compare all fields – binding clears session cache\n"
-        "                    _changed = (\n"
-        "                        (_tk and _tk != self._token)\n"
-        '                        or _d.get("get_updates_buf", "") != getattr(self, "_get_updates_buf", "")\n'
-        '                        or _d.get("context_tokens", {}) != getattr(self, "_context_tokens", {})\n'
-        '                        or _d.get("typing_tickets", {}) != getattr(self, "_typing_tickets", {})\n'
-        "                    )\n"
-        '                    print(f"[CAG-P7] mtime_changed=True changed={_changed} tk_same={_tk == self._token}", flush=True)\n'
+        "                    _diff_tk = (_tk and _tk != self._token)\n"
+        '                    _diff_buf = _d.get("get_updates_buf", "") != getattr(self, "_get_updates_buf", "")\n'
+        '                    _diff_ctx = _d.get("context_tokens", {}) != getattr(self, "_context_tokens", {})\n'
+        '                    _diff_typ = _d.get("typing_tickets", {}) != getattr(self, "_typing_tickets", {})\n'
+        "                    _changed = _diff_tk or _diff_buf or _diff_ctx or _diff_typ\n"
+        '                    _fbuf = repr(_d.get("get_updates_buf", ""))[:40]\n'
+        '                    _mbuf = repr(getattr(self, "_get_updates_buf", ""))[:40]\n'
+        '                    print(f"[CAG-P7] mtime_changed=True changed={_changed} diff(tk={_diff_tk} buf={_diff_buf} ctx={_diff_ctx} typ={_diff_typ}) fbuf={_fbuf} mbuf={_mbuf}", flush=True)\n'
         "                    if _changed:\n"
         '                        self.logger.info("account.json changed externally, clearing pause + reload")\n'
         "                        self._load_state()\n"
