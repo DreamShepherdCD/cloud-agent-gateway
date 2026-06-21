@@ -218,6 +218,8 @@ def apply_patch(source: str) -> str:
         "    def _session_pause_remaining_s(self) -> int:\n"
         "        # cloud-agent-gateway: detect external changes to account.json\n"
         "        # (web bind clears get_updates_buf/context_tokens/typing_tickets)\n"
+        "        _rem = int(self._session_pause_until - time.time())\n"
+        '        print(f"[CAG-P7] heartbeat pause_rem={max(_rem,0)}s", flush=True)\n'
         "        try:\n"
         '            _sf = self._get_state_dir() / "account.json"\n'
         "            if _sf.exists():\n"
