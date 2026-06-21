@@ -388,8 +388,9 @@ def _ensure_binding_session():
     _agent = "default"
     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
-    # Clean up ALL stale binding sessions (not just the first) — otherwise
-    # old sessions from previous restarts accumulate as duplicate pinned chats.
+    # Clean up ALL stale binding sessions — detect by matching title against
+    # both current BINDING_CHAT_TITLE and known historical titles.
+    _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
     _state = platform.read_sidebar_state(_agent)
     _any_deleted = False
     for _pk in list(_state.get("pinned_keys", [])):
@@ -397,11 +398,13 @@ def _ensure_binding_session():
             continue
         _cid = _pk.split(":", 1)[1]
         _lines = platform.read_session(_agent, _cid)
-        if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_CHAT_TITLE:
-            platform.delete_session(_agent, _cid)
-            _state["pinned_keys"].remove(_pk)
-            _any_deleted = True
-            _log(f"deleted old binding session (cid={_cid[:12]})")
+        if _lines:
+            _title = _lines[0].get("metadata", {}).get("title", "")
+            if _title == BINDING_CHAT_TITLE or _title in _LEGACY_BINDING_TITLES:
+                platform.delete_session(_agent, _cid)
+                _state["pinned_keys"].remove(_pk)
+                _any_deleted = True
+                _log(f"deleted old binding session (cid={_cid[:12]}, title={_title})")
     if _any_deleted:
         _state["updated_at"] = _now
         platform.write_sidebar_state(_agent, _state)
@@ -421,7 +424,8 @@ def _ensure_binding_session():
             "_type": "metadata", "key": _key,
             "created_at": _now, "updated_at": _now,
             "metadata": {"title": BINDING_CHAT_TITLE, "webui": True,
-                        "workspace_scope": {"project_path": _project_dir}},
+                        "workspace_scope": {"project_path": _project_dir},
+                        "_binding_type": "system_config"},
             "last_consolidated": 0,
         },
         {
