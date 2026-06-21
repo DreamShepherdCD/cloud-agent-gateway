@@ -760,6 +760,22 @@ async def http_proxy(request: Request) -> Response:
             _log(f"GET /api/sessions → {resp.status_code}")
 
     content = resp.content
+
+    # Fix ws_url in bootstrap response for platforms where the Host header
+    # seen by nanobot is an internal proxy address (e.g., ModelScope PAI-EAS).
+    # nanobot >= dbdb146f constructs ws_url from the Host header; we must
+    # rewrite it to a relative path so the browser connects through this proxy.
+    if path == "/webui/bootstrap" and resp.status_code == 200:
+        try:
+            data = json.loads(content)
+            ws_path = data.get("ws_path", "")
+            if ws_path:
+                data["ws_url"] = ws_path
+                content = json.dumps(data).encode("utf-8")
+                _log("bootstrap ws_url → ws_path (Host header fix)")
+        except Exception as exc:
+            _log(f"bootstrap ws_url fix skipped: {exc}")
+
     content_type = resp.headers.get("content-type", "")
     if request.scope.get("_auth_token"):
         content = _inject_token_script(content, content_type)
