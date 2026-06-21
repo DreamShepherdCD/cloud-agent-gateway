@@ -178,6 +178,7 @@ LOGIN_PAGE = """\
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>登录</title>
+<!-- CAG: workspace_scope fix v2 — real dir at data_root/BINDING_TITLE, renamed to 系统配置 -->
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { display:flex; align-items:center; justify-content:center; min-height:100vh;
@@ -341,7 +342,8 @@ async def login_start(request: Request) -> RedirectResponse:
     return RedirectResponse(auth_url, status_code=302)
 
 
-BINDING_TITLE = "社交通道配置提示"
+BINDING_TITLE = "系统配置"
+BINDING_CHAT_TITLE = "社交通道配置指南"
 
 _rows = "\n".join(
     f"| {b.icon} {b.display} | [绑定{b.display}](/bind/{b.name}) |"
@@ -369,7 +371,7 @@ def _get_binding_chat_id() -> str | None:
             continue
         _cid = _pk.split(":", 1)[1]
         _lines = platform.read_session(_agent, _cid)
-        if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_TITLE:
+        if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_CHAT_TITLE:
             return _cid
     return None
 
@@ -386,8 +388,9 @@ def _ensure_binding_session():
     _agent = "default"
     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
-    # Clean up ALL stale binding sessions (not just the first) — otherwise
-    # old sessions from previous restarts accumulate as duplicate pinned chats.
+    # Clean up ALL stale binding sessions — detect by matching title against
+    # both current BINDING_CHAT_TITLE and known historical titles.
+    _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
     _state = platform.read_sidebar_state(_agent)
     _any_deleted = False
     for _pk in list(_state.get("pinned_keys", [])):
@@ -395,11 +398,13 @@ def _ensure_binding_session():
             continue
         _cid = _pk.split(":", 1)[1]
         _lines = platform.read_session(_agent, _cid)
-        if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_TITLE:
-            platform.delete_session(_agent, _cid)
-            _state["pinned_keys"].remove(_pk)
-            _any_deleted = True
-            _log(f"deleted old binding session (cid={_cid[:12]})")
+        if _lines:
+            _title = _lines[0].get("metadata", {}).get("title", "")
+            if _title == BINDING_CHAT_TITLE or _title in _LEGACY_BINDING_TITLES:
+                platform.delete_session(_agent, _cid)
+                _state["pinned_keys"].remove(_pk)
+                _any_deleted = True
+                _log(f"deleted old binding session (cid={_cid[:12]}, title={_title})")
     if _any_deleted:
         _state["updated_at"] = _now
         platform.write_sidebar_state(_agent, _state)
@@ -408,11 +413,19 @@ def _ensure_binding_session():
     _cid = str(_uuid.uuid4())
     _key = f"websocket:{_cid}"
 
+    # Ensure the project_path directory exists so validate_workspace_scope_payload()
+    # does not reject it (nanobot requires project_path to be an existing directory).
+    import os as _os
+    _project_dir = f"{platform.data_root}/{BINDING_TITLE}"
+    _os.makedirs(_project_dir, exist_ok=True)
+
     platform.write_session(_agent, _cid, [
         {
             "_type": "metadata", "key": _key,
             "created_at": _now, "updated_at": _now,
-            "metadata": {"title": BINDING_TITLE, "webui": True},
+            "metadata": {"title": BINDING_CHAT_TITLE, "webui": True,
+                        "workspace_scope": {"project_path": _project_dir},
+                        "_binding_type": "system_config"},
             "last_consolidated": 0,
         },
         {
@@ -760,6 +773,22 @@ async def http_proxy(request: Request) -> Response:
             _log(f"GET /api/sessions → {resp.status_code}")
 
     content = resp.content
+
+    # Fix ws_url in bootstrap response for platforms where the Host header
+    # seen by nanobot is an internal proxy address (e.g., ModelScope PAI-EAS).
+    # nanobot >= dbdb146f constructs ws_url from the Host header; we must
+    # rewrite it to a relative path so the browser connects through this proxy.
+    if path == "/webui/bootstrap" and resp.status_code == 200:
+        try:
+            data = json.loads(content)
+            ws_path = data.get("ws_path", "")
+            if ws_path:
+                data["ws_url"] = ws_path
+                content = json.dumps(data).encode("utf-8")
+                _log("bootstrap ws_url → ws_path (Host header fix)")
+        except Exception as exc:
+            _log(f"bootstrap ws_url fix skipped: {exc}")
+
     content_type = resp.headers.get("content-type", "")
     if request.scope.get("_auth_token"):
         content = _inject_token_script(content, content_type)
@@ -833,6 +862,34 @@ async def ws_proxy(websocket: WebSocket) -> None:
                                 envelope["sender_name"] = username
                                 data = json.dumps(envelope)
                                 _log(f"WS → neo: type={envelope.get('type','?')} cid={envelope.get('chat_id','?')[:12]}")
+
+                                # Block new chat creation in system config project:
+                                # only pre-defined chats (binding sessions) allowed.
+                                if envelope.get("type") == "new_chat":
+                                    _ws = envelope.get("workspace_scope", {}) or {}
+                                    _pp = (_ws.get("project_path") or "").rstrip("/")
+                                    if _pp.endswith("/" + BINDING_TITLE):
+                                        await websocket.send_text(json.dumps({
+                                            "event": "error",
+                                            "detail": "workspace_scope_rejected",
+                                            "reason": "系统配置项目不允许创建新对话",
+                                            "chat_id": envelope.get("chat_id", ""),
+                                        }))
+                                        _log(f"WS → blocked new_chat in '{BINDING_TITLE}' project")
+                                        continue
+                                # Block moving existing chats into system config project
+                                if envelope.get("type") == "set_workspace_scope":
+                                    _ws = envelope.get("workspace_scope", {}) or {}
+                                    _pp = (_ws.get("project_path") or "").rstrip("/")
+                                    if _pp.endswith("/" + BINDING_TITLE):
+                                        await websocket.send_text(json.dumps({
+                                            "event": "error",
+                                            "detail": "workspace_scope_rejected",
+                                            "reason": "不能将会话移到系统配置项目",
+                                            "chat_id": envelope.get("chat_id", ""),
+                                        }))
+                                        _log(f"WS → blocked set_workspace_scope in '{BINDING_TITLE}' project")
+                                        continue
 
                                 # Block messages to binding chat: don't forward to Neo.
                                 _binding_cid = _get_binding_chat_id()
@@ -919,7 +976,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             async def setup_title():
-                """Ensure a '社交通道配置提示' chat exists, is correctly titled, and pinned."""
+                """Ensure a '系统配置' chat exists, is correctly titled, and pinned."""
                 nonlocal current_chat_id
                 _log(f"WS setup_title: started (username={username})")
                 try:
@@ -936,7 +993,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                             continue
                         _cid = _pk.split(":", 1)[1]
                         _lines = platform.read_session(_agent, _cid)
-                        if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_TITLE:
+                        if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_CHAT_TITLE:
                             _pinned_cid = _cid
                             break
 
@@ -983,7 +1040,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         _existing = platform.read_session(_agent, current_chat_id)
                         if _existing:
                             # Update: set title + replace first user message
-                            _existing[0].setdefault("metadata", {})["title"] = BINDING_TITLE
+                            _existing[0].setdefault("metadata", {})["title"] = BINDING_CHAT_TITLE
                             _found = False
                             for _entry in _existing[1:]:
                                 if _entry.get("role") == "user":
@@ -1004,7 +1061,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
                                 {
                                     "_type": "metadata", "key": _key,
                                     "created_at": _now, "updated_at": _now,
-                                    "metadata": {"title": BINDING_TITLE, "webui": True},
+                                    "metadata": {"title": BINDING_CHAT_TITLE, "webui": True},
                                     "last_consolidated": 0,
                                 },
                                 {
