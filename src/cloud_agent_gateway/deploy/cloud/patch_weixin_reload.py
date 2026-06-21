@@ -216,22 +216,27 @@ def apply_patch(source: str) -> str:
     )
     _replacement_pause_remaining = (
         "    def _session_pause_remaining_s(self) -> int:\n"
-        "        # cloud-agent-gateway: detect token changes from web bind\n"
+        "        # cloud-agent-gateway: detect external changes to account.json\n"
+        "        # (web bind clears get_updates_buf/context_tokens/typing_tickets)\n"
         "        try:\n"
         '            _sf = self._get_state_dir() / "account.json"\n'
-        '            print(f"[CAG-P7] pause_remaining check: sf={_sf} exists={_sf.exists()}", flush=True)\n'
         "            if _sf.exists():\n"
-        '                print(f"[CAG-P7] sf.exists, checking mtime: _mt={_sf.stat().st_mtime:.0f}", flush=True)\n'
         "                _mt = _sf.stat().st_mtime\n"
         "                _last = getattr(self, \"_cag_account_mtime\", 0)\n"
-        '                print(f"[CAG-P7] _mt={_mt:.0f} _last={_last:.0f} match={_mt == _last}", flush=True)\n'
         "                if _mt != _last:\n"
         "                    self._cag_account_mtime = _mt\n"
         "                    _d = json.loads(_sf.read_text())\n"
         '                    _tk = _d.get("token", "")\n'
-        '                    print(f"[CAG-P7] token: file={_tk[:20] if _tk else \"empty\"} vs self=", getattr(self,\"_token\",\"\")[:20], flush=True)\n'
-        "                    if _tk and _tk != self._token:\n"
-        '                        self.logger.info("Token changed, clearing session pause")\n'
+        "                    # compare all fields – binding clears session cache\n"
+        "                    _changed = (\n"
+        "                        (_tk and _tk != self._token)\n"
+        '                        or _d.get("get_updates_buf", "") != getattr(self, "_get_updates_buf", "")\n'
+        '                        or _d.get("context_tokens", {}) != getattr(self, "_context_tokens", {})\n'
+        '                        or _d.get("typing_tickets", {}) != getattr(self, "_typing_tickets", {})\n'
+        "                    )\n"
+        '                    print(f"[CAG-P7] mtime_changed=True changed={_changed} tk_same={_tk == self._token}", flush=True)\n'
+        "                    if _changed:\n"
+        '                        self.logger.info("account.json changed externally, clearing pause + reload")\n'
         "                        self._load_state()\n"
         "                        self._session_pause_until = 0.0\n"
         "                        return 0\n"
