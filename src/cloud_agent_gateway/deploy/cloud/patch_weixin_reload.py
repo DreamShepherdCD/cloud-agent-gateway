@@ -71,12 +71,21 @@ def apply_patch(source: str) -> str:
     )
 
     # ── Patch 2: Reload state after pause in _poll_once ──────────
-    # After sleep(remaining), reload state to clear stale tokens
+    # Replace single asyncio.sleep(remaining) with chunked sleep + token
+    # change detection, so web bindings take effect within 5s during pause.
     source = _replace_once(
         source,
+        "        remaining = self._session_pause_remaining_s()\n"
+        "        if remaining > 0:\n"
         "            await asyncio.sleep(remaining)\n"
         "            return",
-        "            await asyncio.sleep(remaining)\n"
+        "        remaining = self._session_pause_remaining_s()\n"
+        "        if remaining > 0:\n"
+        "            # Chunked sleep to detect token changes from web bind\n"
+        "            while remaining > 0:\n"
+        "                _chunk = min(5, remaining)\n"
+        "                await asyncio.sleep(_chunk)\n"
+        "                remaining = self._session_pause_remaining_s()\n"
         "            self._load_state()\n"
         "            return",
     )
@@ -152,6 +161,184 @@ def apply_patch(source: str) -> str:
     )
     source = _replace_once(source, _anchor_state_dir, _replacement_state_dir)
 
+    # ── Patch 6: Auto-reload on account.json token change ─────────
+    # When gatekeeper writes a new account.json after web binding, the
+    # channel's long-poll loop detects the token change and reloads state
+    # without needing a restart.
+    #
+    # We compare token values (not file mtime) because the channel's own
+    # _save_state() writes back get_updates_buf on every poll cycle,
+    # which would trigger false reloads if we only checked mtime.
+    _anchor_mtime = (
+        '        self.logger.info("channel starting with long-poll...")\n'
+        '\n'
+        '        consecutive_failures = 0\n'
+        '        while self._running:\n'
+    )
+    _replacement_mtime = (
+        '        self.logger.info("channel starting with long-poll...")\n'
+        '\n'
+        '        _state_file = self._get_state_dir() / "account.json"\n'
+        '        _account_mtime = _state_file.stat().st_mtime if _state_file.exists() else 0\n'
+        '        _last_token = self._token\n'
+        '\n'
+        '        consecutive_failures = 0\n'
+        '        while self._running:\n'
+        '            # ── cloud-agent-gateway: detect account.json token change for hot-reload ──\n'
+        '            if _state_file.exists():\n'
+        '                _cur_mtime = _state_file.stat().st_mtime\n'
+        '                if _cur_mtime != _account_mtime:\n'
+        '                    try:\n'
+        '                        _data = json.loads(_state_file.read_text())\n'
+        '                        _token = _data.get("token", "")\n'
+        '                        if _token and _token != _last_token:\n'
+        '                            self.logger.info("account.json token changed, reloading state...")\n'
+        '                            self._load_state()\n'
+        '                            self._session_pause_until = 0.0\n'
+        '                            _last_token = self._token\n'
+        '                    except Exception:\n'
+        '                        pass\n'
+        '                    _account_mtime = _cur_mtime\n'
+    )
+    source = _replace_once(source, _anchor_mtime, _replacement_mtime)
+
+    # ── Patch 7: Detect token changes in _session_pause_remaining_s ──
+    # When gatekeeper writes a new account.json (web bind) while the channel
+    # is in a long pause (e.g. session expired), this check runs on every
+    # poll cycle entry and clears the pause immediately.
+    _anchor_pause_remaining = (
+        "    def _session_pause_remaining_s(self) -> int:\n"
+        "        remaining = int(self._session_pause_until - time.time())\n"
+        "        if remaining <= 0:\n"
+        "            self._session_pause_until = 0.0\n"
+        "            return 0\n"
+        "        return remaining\n"
+    )
+    _replacement_pause_remaining = (
+        "    def _session_pause_remaining_s(self) -> int:\n"
+        "        # cloud-agent-gateway: detect external changes to account.json\n"
+        "        # (web bind clears get_updates_buf/context_tokens/typing_tickets)\n"
+        "        _rem = int(self._session_pause_until - time.time())\n"
+        '        _sf = self._get_state_dir() / "account.json"\n'
+        '        _path = str(_sf)\n'
+        '        if not hasattr(self, "_cag_path_printed"):\n'
+        '            self._cag_path_printed = True\n'
+        '            print(f"[CAG-P7] watching {_path} NANOBOT_ACCOUNT_BASE={os.environ.get(\'NANOBOT_ACCOUNT_BASE\', \'(unset)\')}", flush=True)\n'
+        '        print(f"[CAG-P7] heartbeat pause_rem={max(_rem,0)}s path={_path}", flush=True)\n'
+        "        try:\n"
+        "            if _sf.exists():\n"
+        "                _mt = _sf.stat().st_mtime\n"
+        "                _last = getattr(self, \"_cag_account_mtime\", 0)\n"
+        "                if _mt != _last:\n"
+        "                    self._cag_account_mtime = _mt\n"
+        "                    _d = json.loads(_sf.read_text())\n"
+        '                    _tk = _d.get("token", "")\n'
+        "                    # compare token+buf+ctx – binding clears session cache\n"
+        "                    # typing_tickets excluded: _save_state() often writes it out-of-sync\n"
+        "                    _diff_tk = (_tk and _tk != self._token)\n"
+        '                    _diff_buf = _d.get("get_updates_buf", "") != getattr(self, "_get_updates_buf", "")\n'
+        '                    _diff_ctx = _d.get("context_tokens", {}) != getattr(self, "_context_tokens", {})\n'
+        "                    _changed = _diff_tk or _diff_buf or _diff_ctx\n"
+        '                    _fbuf = repr(_d.get("get_updates_buf", ""))[:40]\n'
+        '                    _mbuf = repr(getattr(self, "_get_updates_buf", ""))[:40]\n'
+        '                    print(f"[CAG-P7] mtime_changed=True changed={_changed} diff(tk={_diff_tk} buf={_diff_buf} ctx={_diff_ctx}) fbuf={_fbuf} mbuf={_mbuf}", flush=True)\n'
+        "                    if _changed:\n"
+        '                        self.logger.info("account.json changed externally, clearing pause + reload")\n'
+        "                        self._load_state()\n"
+        "                        self._session_pause_until = 0.0\n"
+        "                        return 0\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        remaining = int(self._session_pause_until - time.time())\n"
+        "        if remaining <= 0:\n"
+        "            self._session_pause_until = 0.0\n"
+        "            return 0\n"
+        "        return remaining\n"
+    )
+    source = _replace_once(source, _anchor_pause_remaining, _replacement_pause_remaining)
+
+    # ── Patch 8: Catch BaseException to log silent task killers ──
+    # CancelledError (asyncio task cancellation) and other BaseException
+    # subclasses bypass `except Exception`, killing the poll loop silently.
+    # Insert `except BaseException` AFTER the existing `except Exception` block.
+    _anchor_base_exc = (
+        "            except Exception:\n"
+        "                if not self._running:\n"
+        "                    break\n"
+        '                self.logger.exception("WeChat poll loop error")\n'
+        "                consecutive_failures += 1\n"
+        "                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:\n"
+        "                    consecutive_failures = 0\n"
+        "                    await asyncio.sleep(BACKOFF_DELAY_S)\n"
+        "                else:\n"
+        "                    await asyncio.sleep(RETRY_DELAY_S)\n"
+    )
+    _replacement_base_exc = (
+        "            except Exception:\n"
+        "                if not self._running:\n"
+        "                    break\n"
+        '                self.logger.exception("WeChat poll loop error")\n'
+        "                consecutive_failures += 1\n"
+        "                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:\n"
+        "                    consecutive_failures = 0\n"
+        "                    await asyncio.sleep(BACKOFF_DELAY_S)\n"
+        "                else:\n"
+        "                    await asyncio.sleep(RETRY_DELAY_S)\n"
+        "            except BaseException:\n"
+        "                if not self._running:\n"
+        "                    break\n"
+        '                self.logger.warning(\n'
+        '                    f"WeChat poll loop killed ({type(e).__name__}), exiting"\n'
+        "                )\n"
+        "                break\n"
+    )
+    source = _replace_once(source, _anchor_base_exc, _replacement_base_exc)
+
+    # ── Patch 9: _save_state() external change guard ──
+    # During active polling, _save_state() writes every ~5s and can overwrite
+    # binding writes (write_credential). Check mtime before writing; if token
+    # changed externally, reload from disk instead of overwriting.
+    _anchor_save_state = (
+        "    def _save_state(self) -> None:\n"
+        '        state_file = self._get_state_dir() / "account.json"\n'
+        "        with suppress(Exception):\n"
+        "            data = {\n"
+        '                "token": self._token,\n'
+        '                "get_updates_buf": self._get_updates_buf,\n'
+        '                "context_tokens": self._context_tokens,\n'
+        '                "typing_tickets": self._typing_tickets,\n'
+        '                "base_url": self.config.base_url,\n'
+        "            }\n"
+        "            state_file.write_text(json.dumps(data, ensure_ascii=False))\n"
+    )
+    _replacement_save_state = (
+        "    def _save_state(self) -> None:\n"
+        '        _sf = self._get_state_dir() / "account.json"\n'
+        '        # cloud-agent-gateway Patch 9: detect binding write before overwriting\n'
+        "        if hasattr(self, '_cag_last_save_mtime') and _sf.exists():\n"
+        "            _disk_mtime = _sf.stat().st_mtime\n"
+        "            if _disk_mtime != self._cag_last_save_mtime:\n"
+        "                with suppress(Exception):\n"
+        "                    _disk = json.loads(_sf.read_text())\n"
+        '                    _disk_tk = _disk.get("token", "")\n'
+        "                    if _disk_tk and _disk_tk != self._token:\n"
+        '                        self.logger.info("account.json externally modified, reloading (P9)")\n'
+        "                        self._load_state()\n"
+        "                        self._cag_last_save_mtime = _sf.stat().st_mtime\n"
+        "                        return\n"
+        "        with suppress(Exception):\n"
+        "            data = {\n"
+        '                "token": self._token,\n'
+        '                "get_updates_buf": self._get_updates_buf,\n'
+        '                "context_tokens": self._context_tokens,\n'
+        '                "typing_tickets": self._typing_tickets,\n'
+        '                "base_url": self.config.base_url,\n'
+        "            }\n"
+        "            _sf.write_text(json.dumps(data, ensure_ascii=False))\n"
+        "            self._cag_last_save_mtime = _sf.stat().st_mtime\n"
+    )
+    source = _replace_once(source, _anchor_save_state, _replacement_save_state)
+
     return source
 
 
@@ -164,6 +351,9 @@ def verify_patch(source: str) -> None:
         "(httpx.Timeout assignment removed",
         'os.environ.get("NANOBOT_ACCOUNT_BASE")',  # _get_state_dir patch
         "self._load_state()",  # after asyncio.sleep
+        "_last_token = self._token",  # Patch 6: token-change reload
+        "self._cag_account_mtime",  # Patch 7: pause-remaining token check
+        "_cag_last_save_mtime",  # Patch 9: _save_state external change guard
     ]
     for m in markers:
         if m not in source:
