@@ -249,7 +249,8 @@ fm.addEventListener('submit', async function(e){
   e.preventDefault();
   msg.textContent = '正在保存配置...';
   var fd = new FormData(fm);
-  var resp = await fetch('/', {method:'POST', body:fd});
+  var payload = {}; fd.forEach(function(v,k){ payload[k]=v; });
+  var resp = await fetch('/', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
   var data = await resp.json();
   if(data.ok) {
     msg.textContent = '\u2705 配置已保存！空间即将重启，稍后刷新页面即可使用。';
@@ -291,8 +292,7 @@ async def get_setup(request: Request) -> HTMLResponse:
 
 
 async def post_setup(request: Request) -> JSONResponse:
-    form_data = await request.form()
-    form = {k: v for k, v in form_data.items() if isinstance(v, str)}
+    form = await request.json()
 
     required = ["provider", "api_key"]
     missing = [k for k in required if not form.get(k, "").strip()]
