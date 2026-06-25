@@ -284,7 +284,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 DATA_ROOT = _detect_data_root()
-CONFIG_PATH = os.path.join(DATA_ROOT, "config.json")
+CONFIG_PATH = os.path.join(DATA_ROOT, "instances", "default", "config.json")
 
 
 async def get_setup(request: Request) -> HTMLResponse:
@@ -304,6 +304,7 @@ async def post_setup(request: Request) -> JSONResponse:
 
     try:
         config = _build_config(form)
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         os.makedirs(DATA_ROOT, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
