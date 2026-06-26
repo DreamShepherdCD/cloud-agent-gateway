@@ -211,7 +211,9 @@ SETUP_HTML = """\
       <input id="api_key" name="api_key" type="password"
              placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
              autocomplete="off" required>
-      <p class="tip">密钥仅保存在你的空间里，不会上传。</p>
+      <p class="tip">密钥仅保存在你的空间里，不会上传。
+        <span id="key-link"></span>
+      </p>
 
       <div id="custom-fields" class="hidden">
         <label for="api_base">API 地址</label>
@@ -286,6 +288,16 @@ var P = {
   custom:{base:"",ml:[],dm:""}
 };
 
+// provider → API Key 创建链接
+var KEY_URL = {
+  deepseek:"https://platform.deepseek.com/api_keys",
+  openai:"https://platform.openai.com/api-keys",
+  siliconflow:"https://cloud.siliconflow.cn/account/ak",
+  zhipu:"https://open.bigmodel.cn/usercenter/apikeys",
+  dashscope:"https://bailian.console.aliyun.com/?apiKey=1",
+  custom:""
+};
+
 var sel = document.getElementById('provider');
 var mInput = document.getElementById('model');
 var mList = document.getElementById('model-list');
@@ -301,6 +313,10 @@ function updateUI() {
   mInput.placeholder = p.dm ? '默认: '+p.dm : '输入模型名';
   if(k==='custom') { cf.classList.remove('hidden'); ab.required=true; }
   else { cf.classList.add('hidden'); ab.required=false; ab.value = p.base; }
+  // API Key 创建链接
+  var url = KEY_URL[k];
+  var kl = document.getElementById('key-link');
+  kl.innerHTML = url ? '👉 <a href="'+url+'" target="_blank">获取 '+sel.options[sel.selectedIndex].text+' API Key</a>' : '';
 }
 sel.addEventListener('change', updateUI);
 updateUI();
