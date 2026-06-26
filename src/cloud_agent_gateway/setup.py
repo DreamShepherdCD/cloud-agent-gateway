@@ -74,41 +74,6 @@ def _detect_data_root() -> str:
 
 
 # ── config builder ───────────────────────────────────────────────────
-RUNTIME_DOCKERFILE = """\
-FROM python:3.12-slim
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    curl git nodejs npm \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \\
-    "git+https://github.com/DreamShepherdCD/cloud-agent-gateway.git@feat/setup-page" \\
-    itsdangerous \\
-    "git+https://github.com/DreamShepherd2006/nanobot.git@nightly" \\
-    && echo "[system] installed"
-
-RUN SITE_PKG=$(python3 -c 'import site; print(site.getsitepackages()[0])') && \\
-    CMD_FILE="$SITE_PKG/nanobot/cli/commands.py" && \\
-    sed -i 's/config\\.gateway\\.host = "127\\.0\\.0\\.1"/config.gateway.host = "0.0.0.0"/g' "$CMD_FILE" && \\
-    sed -i '/^def _run_gateway/,/^def /{s/host = host if host is not None else api_cfg\\.host/host = "0.0.0.0"/}' "$CMD_FILE" && \\
-    echo "[patch] 0.0.0.0"
-
-RUN python3 -m cloud_agent_gateway.deploy.cloud.patch_weixin_reload \\
-    && python3 -m cloud_agent_gateway.deploy.cloud.patch_feishu_reload \\
-    && python3 -m cloud_agent_gateway.deploy.cloud.patch_dingtalk_reload \\
-    && python3 -m cloud_agent_gateway.deploy.cloud.patch_qq_reload \\
-    && echo "[patch] channels"
-
-EXPOSE 7860
-
-RUN useradd -m -u 1000 nanobot && chown -R nanobot:nanobot /app
-USER nanobot
-ENV HOME=/home/nanobot
-
-CMD ["python3", "-m", "cloud_agent_gateway.template_launch"]
-"""
 
 
 def _build_config(form: dict[str, str]) -> dict:
@@ -356,16 +321,6 @@ function copyRedirect() {
   });
 }
 
-// download Phase 2 Dockerfile
-function downloadDockerfile() {
-  fetch('/dockerfile.next').then(function(r){ return r.blob(); }).then(function(blob){
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'Dockerfile.next';
-    a.click();
-  });
-}
-
 // form submit
 var fm = document.getElementById('setup-form');
 var msg = document.getElementById('submit-msg');
@@ -378,11 +333,10 @@ fm.addEventListener('submit', async function(e){
   var data = await resp.json();
   if(data.ok) {
     msg.innerHTML = '\u2705 配置已保存！<br><br>'
-      + '<b>下一步：替换 Dockerfile 并工厂重建</b><br>'
-      + '① 下载 <a href="javascript:void(0)" onclick="downloadDockerfile()">Dockerfile.next</a><br>'
-      + '② 改名 Dockerfile 上传到空间<br>'
-      + '③ 在空间页面点「工厂重建 / Factory Rebuild」<br><br>'
-      + '完成后访问空间 → OAuth 登录 → 即可使用 AI 助手。';
+      + '<b>下一步：重启空间</b><br>'
+      + 'ModelScope：点「停止」→ 再点「启动」<br>'
+      + 'HuggingFace：Factory Rebuild<br><br>'
+      + '重启后访问空间 → OAuth 登录 → 即可使用 AI 助手。';
   } else {
     msg.innerHTML = '\u274c 保存失败: '+ (data.error||'未知错误');
   }
@@ -420,18 +374,6 @@ async def get_setup(request: Request) -> HTMLResponse:
     return HTMLResponse(SETUP_HTML)
 
 
-async def get_dockerfile_next(request: Request) -> HTMLResponse:
-    """Serve the Phase 2 Dockerfile as download."""
-    from starlette.responses import PlainTextResponse
-    dockerfile_next = os.path.join(DATA_ROOT, "Dockerfile.next")
-    try:
-        with open(dockerfile_next, encoding="utf-8") as f:
-            content = f.read()
-        return PlainTextResponse(content, media_type="application/octet-stream")
-    except FileNotFoundError:
-        return PlainTextResponse("Dockerfile.next not found yet. Submit the form first.", status_code=404)
-
-
 async def post_setup(request: Request) -> JSONResponse:
     form = await request.json()
 
@@ -449,11 +391,6 @@ async def post_setup(request: Request) -> JSONResponse:
         os.makedirs(DATA_ROOT, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
-
-        # 同时生成 Phase 2 的 Dockerfile
-        dockerfile_next = os.path.join(DATA_ROOT, "Dockerfile.next")
-        with open(dockerfile_next, "w", encoding="utf-8") as f:
-            f.write(RUNTIME_DOCKERFILE)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -470,7 +407,6 @@ app = Starlette(
     routes=[
         Route("/", get_setup, methods=["GET"]),
         Route("/", post_setup, methods=["POST"]),
-        Route("/dockerfile.next", get_dockerfile_next, methods=["GET"]),
     ],
 )
 
