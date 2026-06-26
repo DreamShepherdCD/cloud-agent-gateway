@@ -390,13 +390,10 @@ async def post_setup(request: Request) -> JSONResponse:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
         print(f"[setup] ✅ config.json 已写入: {json.dumps(list(config.keys()))}", flush=True)
-        if oauth_cfg:
-            oauth_path = os.path.join(DATA_ROOT, "oauth.json")
-            with open(oauth_path, "w", encoding="utf-8") as f:
-                json.dump(oauth_cfg, f)
-            print(f"[setup] ✅ oauth.json 已写入: {json.dumps(list(oauth_cfg.keys()))}", flush=True)
-        else:
-            print("[setup] ℹ️  未填写 OAuth，跳过 oauth.json", flush=True)
+        oauth_path = os.path.join(DATA_ROOT, "oauth.json")
+        with open(oauth_path, "w", encoding="utf-8") as f:
+            json.dump(oauth_cfg, f)
+        print(f"[setup] ✅ oauth.json 已写入: {json.dumps(list(oauth_cfg.keys()))}", flush=True)
         # 回读验证
         with open(CONFIG_PATH, encoding="utf-8") as f:
             verify = json.load(f)
