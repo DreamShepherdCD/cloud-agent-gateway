@@ -359,7 +359,17 @@ BINDING_CHAT_CONTENT = f"""\
 |------|------|
 {_rows}
 
-👆 点击上方链接即可操作，无需在此聊天。"""
+👆 点击上方链接即可操作，无需在此聊天。
+
+---
+
+# ⚙️ 系统重置
+
+如需重新配置 API Key、模型或 OAuth，访问：
+
+👉 [`/reset-setup`](/reset-setup)
+
+操作后需**手动重启空间**（停止 → 启动）进入初始化配置页。"""
 
 
 def _get_binding_chat_id() -> str | None:
