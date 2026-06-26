@@ -212,7 +212,8 @@ p { color:#999; margin-bottom:2rem; font-size:0.95rem; }
 _AUTH_FREE = {LOGIN_PATH, LOGIN_START_PATH, CALLBACK_PATH,
               "/auth/callback", "/login/callback",
               "/health", "/-/health",
-               "/api/squad/relay"}
+              "/api/squad/relay",
+              "/reset-setup"}
 for _b in _bindings:
     _AUTH_FREE.add(f"/bind/{_b.name}")
     for _path_suffix, _method, _handler in _b.public_routes:
@@ -670,6 +671,23 @@ async def health(request: Request) -> Response:
             return Response(content=resp.content, status_code=resp.status_code)
     except Exception:
         return Response(content=b"unhealthy", status_code=503)
+
+
+async def reset_setup(request: Request) -> JSONResponse:
+    """Delete oauth.json + config.json so next restart enters Phase 1 setup."""
+    import glob as _glob
+    data_root = os.environ.get("DATA_ROOT", "/mnt/workspace")
+    deleted = []
+    for p in [
+        os.path.join(data_root, "oauth.json"),
+        os.path.join(data_root, "instances", "default", "config.json"),
+    ]:
+        try:
+            os.unlink(p)
+            deleted.append(p)
+        except FileNotFoundError:
+            pass
+    return JSONResponse({"ok": True, "deleted": deleted, "hint": "重启空间进入 setup"})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1183,6 +1201,7 @@ app.router.add_route(CALLBACK_PATH, callback, methods=["GET"])
 app.router.add_route("/auth/callback", callback, methods=["GET"])
 app.router.add_route("/login/callback", callback, methods=["GET"])
 app.router.add_route("/health", health, methods=["GET"])
+app.router.add_route("/reset-setup", reset_setup, methods=["GET"])
 app.router.add_route("/api/squad/relay", squad_relay, methods=["POST"])
 
 # Register binding routes from discovered specs
