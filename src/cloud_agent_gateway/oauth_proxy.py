@@ -375,15 +375,20 @@ BINDING_CHAT_CONTENT = f"""\
 
 # 📦 开源代码
 
-本项目完全开源，基于 [cloud-agent-gateway](https://github.com/DreamShepherd2006/cloud-agent-gateway) 构建。
+本项目完全开源。
 
-🧭 **浏览源码** → 访问上方 GitHub 链接查看完整代码
+| 组件 | 源码 |
+|------|------|
+| cloud-agent-gateway（框架层） | [GitHub](https://github.com/DreamShepherd2006/cloud-agent-gateway) |
+| nanobot（AI 引擎） | [GitHub](https://github.com/DreamShepherd2006/nanobot) |
+
+🧭 **浏览源码** → 点击上方链接查看完整代码
 
 🔄 **部署到空间** → 在 ModelScope 创建空间时选择「通过 Git 上传」，输入：
 ```
 https://github.com/DreamShepherd2006/cloud-agent-gateway
 ```
-部署后空间的「文件」tab 即可看到完整源码。"""
+部署后空间的「文件」tab 即可看到完整框架源码。"""
 
 
 def _get_binding_chat_id() -> str | None:
