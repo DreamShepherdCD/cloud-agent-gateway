@@ -70,6 +70,11 @@ def _detect_data_root() -> str:
     return "/data"
 
 
+def _is_hf_space() -> bool:
+    """True if running on HuggingFace Spaces (hf_oauth:true may inject env vars)."""
+    return os.environ.get("HF_SPACE") == "1" or bool(os.environ.get("SPACE_ID"))
+
+
 # ── config builder ───────────────────────────────────────────────────
 
 
@@ -140,13 +145,15 @@ def _build_config(form: dict[str, str]) -> dict:
         },
     }
 
-    # OAuth 配置：优先使用环境变量（HF hf_oauth:true 自动注入），
-    # 否则从表单读取（ModelScope 用户手动填写）
-    env_id = os.environ.get("OAUTH_CLIENT_ID", "").strip()
-    env_secret = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
-    if env_id and env_secret:
-        oauth_cfg = {"client_id": env_id, "client_secret": env_secret}
-    else:
+    # OAuth auto-detect: only on HF Spaces with valid env vars.
+    # ModelScope has no such mechanism — always use manual form.
+    oauth_cfg = {}
+    if _is_hf_space():
+        env_id = os.environ.get("OAUTH_CLIENT_ID", "").strip()
+        env_secret = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
+        if env_id and env_secret:
+            oauth_cfg = {"client_id": env_id, "client_secret": env_secret}
+    if not oauth_cfg:
         client_id = form.get("oauth_client_id", "").strip()
         client_secret = form.get("oauth_client_secret", "").strip()
         oauth_cfg = {"client_id": client_id, "client_secret": client_secret} if client_id and client_secret else {}
@@ -424,6 +431,13 @@ CONFIG_PATH = os.path.join(DATA_ROOT, "instances", "default", "config.json")
 async def get_setup(request: Request) -> HTMLResponse:
     """Return setup HTML with pre-filled values if config.json already exists."""
     prefill_js = ""
+    # Compute OAuth auto-detect: only on HF Spaces with valid OAUTH_CLIENT_ID
+    hf_oauth_auto = "false"
+    if _is_hf_space():
+        env_id = os.environ.get("OAUTH_CLIENT_ID", "").strip()
+        env_secret = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
+        if env_id and env_secret:
+            hf_oauth_auto = "true"
     try:
         if os.path.isfile(CONFIG_PATH):
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -444,7 +458,7 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
             print(f"[setup] 🔄 预填 config.json: provider={provider}, model={model}, api_key={'***' if api_key else '(空)'}", flush=True)
     except Exception as e:
         print(f"[setup] ⚠️ 预填失败（忽略）: {e}", flush=True)
-    return HTMLResponse(SETUP_HTML.replace("{PREFILL_JS}", prefill_js))
+    return HTMLResponse(SETUP_HTML.replace("{PREFILL_JS}", prefill_js).replace("{HF_OAUTH_AUTO}", hf_oauth_auto))
 
 
 async def post_setup(request: Request) -> JSONResponse:
