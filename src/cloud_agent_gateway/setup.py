@@ -233,20 +233,24 @@ SETUP_HTML = """\
       <p class="sub">配置后可通过 ModelScope / HuggingFace 账号登录，无需重复填 API Key。</p>
 
       <div id="oauth-section">
-        <p class="step-num">① 复制你的空间回调地址</p>
+        <p class="step-num">① 复制你的空间地址 &amp; 回调地址</p>
+        <div class="copy-box">
+          <code id="space-url">检测中...</code>
+          <button type="button" id="copy-space-btn" onclick="copySpaceUrl()">📋 复制</button>
+        </div>
         <div class="copy-box">
           <code id="redirect-url">检测中...</code>
           <button type="button" id="copy-btn" onclick="copyRedirect()">📋 复制</button>
         </div>
 
-        <p class="step-num">② 创建 OAuth 应用并粘贴回调地址</p>
+        <p class="step-num">② 创建 OAuth 应用并粘贴</p>
         <p class="tip" id="oauth-link-ms">
           👉 打开
           <a href="https://modelscope.cn/my/createApplications?status=create" target="_blank">ModelScope 创建 OAuth 应用</a>
           ，填写：
           <ul style="font-size:0.85rem;margin:4px 0 0 1em;padding:0">
             <li><b>应用名称</b>：任意（如 我的AI助手）</li>
-            <li><b>应用官网</b>：填你的空间地址</li>
+            <li><b>应用官网</b>：粘贴上面的空间地址</li>
             <li><b>授权范围</b>：勾选 <code>profile</code>（用户公开信息）+ <code>read-repos</code>（读取个人仓库）</li>
             <li><b>重定向URL</b>：粘贴上面的回调地址</li>
           </ul>
@@ -325,8 +329,22 @@ updateUI();
 var redirectEl = document.getElementById('redirect-url');
 var host = window.location.host;
 var isMS = host.indexOf('.ms.show') !== -1;
-var redirectUrl = window.location.origin + (isMS ? '/api/auth/callback' : '/auth/callback');
+var spaceUrl = window.location.origin;
+var redirectUrl = spaceUrl + (isMS ? '/api/auth/callback' : '/auth/callback');
 redirectEl.textContent = redirectUrl;
+
+var spaceEl = document.getElementById('space-url');
+spaceEl.textContent = spaceUrl;
+
+function copySpaceUrl() {
+  navigator.clipboard.writeText(spaceUrl).then(function(){
+    var btn = document.getElementById('copy-space-btn');
+    btn.textContent = '✅ 已复制';
+    setTimeout(function(){ btn.textContent = '📋 复制'; }, 2000);
+  }).catch(function(){
+    prompt('按 Ctrl+C 复制:', spaceUrl);
+  });
+}
 
 // 平台检测：有 ms.show 域名 → ModelScope，否则 HuggingFace
 document.getElementById('oauth-link-ms').style.display = isMS ? '' : 'none';
