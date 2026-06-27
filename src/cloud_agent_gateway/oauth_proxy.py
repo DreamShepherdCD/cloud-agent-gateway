@@ -740,21 +740,22 @@ async def reset_setup(request: Request) -> JSONResponse:
     After calling this, the user should manually restart the space to enter
     Phase 1 setup. The preserved config.json will be used to pre-fill the form.
     """
-    data_root = os.environ.get("DATA_ROOT", "/mnt/workspace")
     deleted = []
     errors = []
 
     # 1) Delete oauth.json (the trigger for Phase 1)
-    oauth_path = os.path.join(data_root, "oauth.json")
-    try:
-        os.unlink(oauth_path)
-        deleted.append(oauth_path)
-    except FileNotFoundError:
-        pass
+    # Match the Dockerfile CMD check: /data (HF) or /mnt/workspace (MS).
+    # Using env DATA_ROOT alone fails on HF where DATA_ROOT may not be set.
+    for oauth_path in ["/data/oauth.json", "/mnt/workspace/oauth.json"]:
+        try:
+            os.unlink(oauth_path)
+            deleted.append(oauth_path)
+        except FileNotFoundError:
+            pass
 
     # 2) Clear stale binding session content (will be recreated on next OAuth login)
     try:
-        _clear_binding_session(data_root)
+        _clear_binding_session()
     except Exception as exc:
         errors.append(f"clear_binding_session: {exc}")
 
