@@ -127,6 +127,12 @@ def main() -> None:
             result = subprocess.run(
                 args,
                 capture_output=True, text=True, timeout=120,
+                env={
+                    **os.environ,
+                    # Docker containers lack kernel sandbox capabilities;
+                    # Chrome requires --no-sandbox to run headless in containers.
+                    "CHROME_NO_SANDBOX": "1",
+                },
             )
 
             if result.returncode != 0:
