@@ -58,6 +58,11 @@ def inject_mcp_config(config_path: str) -> bool:
         return False
 
     tools = cfg.setdefault("tools", {})
+    # Pydantic v2 accepts both snake_case and camelCase for the same field.
+    # If the config template ships with an empty "mcpServers" (camelCase),
+    # it shadows our snake_case "mcp_servers" during model validation,
+    # causing all injected MCP servers to be silently dropped.
+    tools.pop("mcpServers", None)
     existing = tools.setdefault("mcp_servers", {})
     incoming = get_mcp_server_configs()
 
