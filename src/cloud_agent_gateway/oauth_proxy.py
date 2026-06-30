@@ -1294,7 +1294,11 @@ app.router.add_route("/reset-setup", reset_setup, methods=["GET"])
 app.router.add_route("/api/squad/relay", squad_relay, methods=["POST"])
 
 # File manager — /files/…
-app.mount("/files", file_manager.app)
+app.router.add_route("/files", file_manager.list_page, methods=["GET"])
+app.router.add_route("/files/", file_manager.list_page, methods=["GET"])
+app.router.add_route("/files/view/{path:path}", file_manager.view_file, methods=["GET"])
+app.router.add_route("/files/upload", file_manager.upload_file, methods=["POST"])
+app.router.add_route("/files/delete/{path:path}", file_manager.delete_file, methods=["DELETE"])
 
 # Register binding routes from discovered specs
 for _b in _bindings:
