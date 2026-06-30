@@ -127,6 +127,9 @@ def main() -> None:
             result = subprocess.run(
                 args,
                 capture_output=True, text=True, timeout=120,
+                # MCP stdio transport uses parent stdin for JSON-RPC.
+                # Disconnect marp from it to prevent accidental reads/hangs.
+                stdin=subprocess.DEVNULL,
                 env={
                     **os.environ,
                     # Docker containers lack kernel sandbox capabilities;
