@@ -417,6 +417,18 @@ def _build_binding_content() -> str:
     cag_link = _build_source_link(cag_info, "DreamShepherd2006/cloud-agent-gateway")
     nanobot_link = _build_source_link(nanobot_info, "DreamShepherd2006/nanobot", "nightly")
 
+    # Dockerfile link: derive from CAG repo/revision
+    if cag_info and cag_info.get("repo") and cag_info.get("revision"):
+        dockerfile_href = f"https://github.com/{cag_info['repo']}/blob/{cag_info['revision']}/Dockerfile"
+        dockerfile_display = f"{cag_info['repo']}/Dockerfile"
+        dockerfile_link = f"[{dockerfile_display}]({dockerfile_href})"
+    elif cag_info and cag_info.get("repo") and cag_info.get("commit"):
+        dockerfile_href = f"https://github.com/{cag_info['repo']}/blob/{cag_info['commit'][:7]}/Dockerfile"
+        dockerfile_display = f"{cag_info['repo']}/Dockerfile @{cag_info['commit'][:7]}"
+        dockerfile_link = f"[{dockerfile_display}]({dockerfile_href})"
+    else:
+        dockerfile_link = "[DreamShepherd2006/cloud-agent-gateway/Dockerfile](https://github.com/DreamShepherd2006/cloud-agent-gateway/blob/staging/Dockerfile)"
+
     return f"""\
 # 📱 社交通道配置
 
@@ -457,15 +469,12 @@ Agent 生成的输出文件存放在此，可随时下载。
 | 组件 | 源码 |
 |------|------|
 | cloud-agent-gateway（框架层） | {cag_link} |
+| Dockerfile（部署模板） | {dockerfile_link} |
 | nanobot（AI 引擎） | {nanobot_link} |
 
 🧭 **浏览源码** → 点击上方链接查看完整代码
 
-🔄 **部署到空间** → 在 ModelScope 创建空间时选择「通过 Git 上传」，输入：
-```
-https://github.com/DreamShepherd2006/cloud-agent-gateway
-```
-部署后空间的「文件」tab 即可看到完整框架源码。"""
+🔄 **部署新空间** → 点击上方 Dockerfile 链接，复制内容粘贴到新空间的 Dockerfile，重建即可获得完全相同的环境。"""
 
 
 def _get_binding_chat_id() -> str | None:
