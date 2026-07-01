@@ -10,10 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Marp 浏览器路径 ───────────────────────────────────────────────────
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# ── CAG (fork commit: MCP + font fix) + nanobot ───────────────────────
-# 🔄 bump BUILD to force reinstall: 3
-RUN echo [bust=3] && pip install --no-cache-dir \
-    "git+https://github.com/DreamShepherdCD/cloud-agent-gateway.git@3c9e85f" \
+# ── CAG v0.1.10 + nanobot ──────────────────────────────────────────────
+# 🔄 bump BUILD to force reinstall: 4
+RUN echo [bust=4] && pip install --no-cache-dir \
+    "git+https://github.com/DreamShepherd2006/cloud-agent-gateway.git@v0.1.10" \
     itsdangerous \
     markitdown \
     "git+https://github.com/DreamShepherd2006/nanobot.git@dbdb146f" \
