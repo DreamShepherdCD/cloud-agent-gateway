@@ -238,9 +238,14 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
         },
     }
 
-    # oauth
+    # oauth (same logic as _build_config)
     oauth_cfg = {}
-    if not _is_hf_space():
+    if _is_hf_space():
+        env_id = os.environ.get("OAUTH_CLIENT_ID", "").strip()
+        env_secret = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
+        if env_id and env_secret:
+            oauth_cfg = {"client_id": env_id, "client_secret": env_secret}
+    if not oauth_cfg:
         client_id = form.get("oauth_client_id", "").strip()
         client_secret = form.get("oauth_client_secret", "").strip()
         oauth_cfg = {"client_id": client_id, "client_secret": client_secret} if client_id and client_secret else {}
