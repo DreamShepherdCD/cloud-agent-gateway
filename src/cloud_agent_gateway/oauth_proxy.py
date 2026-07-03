@@ -1081,13 +1081,21 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             async def setup_title():
-                """Ensure a '系统配置' chat exists, is correctly titled, and pinned."""
+                """Ensure a '系统配置' chat exists, is correctly titled, and pinned.
+
+                Refreshes the binding session content on every startup so that
+                additions to BINDING_CHAT_CONTENT (e.g. new agent management
+                links) appear without requiring a full /reset-setup cycle.
+                """
                 nonlocal current_chat_id
                 _log(f"WS setup_title: started (username={username})")
                 try:
                     import time as _time
                     from cloud_agent_gateway.platforms import platform
                     _agent = "default"
+
+                    # Always refresh binding session — updates pinned content if changed
+                    _ensure_binding_session()
                     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
                     # ── Step 0: check for an existing pinned binding chat ──
