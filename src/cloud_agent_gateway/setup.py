@@ -224,7 +224,7 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
                 "model": model,
             }
         },
-        "channels": {"websocket": {"enabled": True}},
+        "channels": {"websocket": {"enabled": True, "port": 0}},
     }
 
     # oauth (same logic as _build_config)
