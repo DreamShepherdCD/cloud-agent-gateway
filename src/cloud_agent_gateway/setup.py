@@ -77,6 +77,23 @@ def _is_hf_space() -> bool:
 
 # ── config builder ───────────────────────────────────────────────────
 
+def _build_squad_peers() -> dict:
+    """Return standard 5-agent peer definitions for Legion mode."""
+    return {
+        "neo":      {"id": "squad:commander", "gateway_port": 20001, "ws_port": 20002},
+        "trinity":  {"id": "squad:trinity",    "gateway_port": 20011, "ws_port": 20012},
+        "sentinel": {"id": "squad:sentinel",   "gateway_port": 20021, "ws_port": 20022},
+        "assistant":{"id": "squad:assistant",  "gateway_port": 20031, "ws_port": 20032},
+        "medic":    {"id": "squad:medic",      "gateway_port": 20041, "ws_port": 20042},
+    }
+
+
+def _detect_deploy_platform() -> str:
+    """Detect deploy_platform for squad_config.json."""
+    if os.environ.get("MODELSCOPE_ENVIRONMENT") == "studio":
+        return "modelscope-squad"
+    return "hf-staging"
+
 
 def _build_config(form: dict[str, str]) -> dict:
     """Build a minimal CAG config.json from user form input."""
@@ -161,6 +178,76 @@ def _build_config(form: dict[str, str]) -> dict:
     return config, oauth_cfg
 
 
+def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
+    """Build squad_config.json, neo's config.json, and oauth.json for Legion mode."""
+    data_root = _detect_data_root()
+    deploy_platform = _detect_deploy_platform()
+    commander_user = form.get("commander_user", "").strip()
+
+    # squad_config.json
+    squad_config = {
+        "deploy_platform": deploy_platform,
+        "data_root": data_root,
+        "webui_agent": "neo",
+        "commander_whitelist": [commander_user] if commander_user else [],
+        "user_agent_map": {},
+        "relay_timeout": 120,
+        "gatekeeper_port": 7860,
+        "dlq_dir": os.path.join(data_root, "dlq"),
+        "peers": _build_squad_peers(),
+    }
+
+    # neo's config.json (same as _build_config but for neo agent)
+    provider_key = form["provider"]
+    presets = PROVIDERS[provider_key]
+    api_base = form.get("api_base", "").strip() or presets["api_base"]
+    model = form.get("model", "").strip() or presets["default_model"]
+    api_key = form.get("api_key", "").strip()
+
+    neo_config: dict[str, object] = {
+        "gateway": {
+            "host": "127.0.0.1",
+            "port": 20001,
+        },
+        "agents": {
+            "defaults": {
+                "instructions": "I am nanobot — a helpful AI assistant.",
+                "model": model,
+                "provider": provider_key,
+                "max_tokens": 8192,
+                "temperature": 0.7,
+            },
+        },
+        "auth": {
+            "provider": provider_key,
+            "providers": {
+                provider_key: {
+                    "name": provider_key,
+                    "api_base": api_base,
+                    "api_key": api_key if api_key else "",
+                    "models": [model] if model else [],
+                }
+            },
+            "default_model": model,
+        },
+        "channels": {"websocket": {"enabled": True}},
+        "recovery": {
+            "enabled": True,
+            "interval": 3,
+            "max_time_seconds": 300,
+        },
+    }
+
+    # oauth
+    oauth_cfg = {}
+    if not _is_hf_space():
+        client_id = form.get("oauth_client_id", "").strip()
+        client_secret = form.get("oauth_client_secret", "").strip()
+        oauth_cfg = {"client_id": client_id, "client_secret": client_secret} if client_id and client_secret else {}
+
+    return squad_config, neo_config, oauth_cfg
+
+
 # ── HTML ─────────────────────────────────────────────────────────────
 SETUP_HTML = """\
 <!DOCTYPE html>
@@ -187,9 +274,16 @@ SETUP_HTML = """\
   button:hover { background:#357abd }
   .tip { font-size:12px; color:#999; margin-top:6px }
    .hidden { display:none }
-  .divider { border:none; border-top:1px solid #eee; margin:28px 0 20px }
-  .section-title { font-size:16px; margin-bottom:8px }
-  .step-num { font-size:13px; font-weight:600; color:#555; margin-top:18px; margin-bottom:6px }
+   .divider { border:none; border-top:1px solid #eee; margin:28px 0 20px }
+   .section-title { font-size:16px; margin-bottom:8px }
+   .step-num { font-size:13px; font-weight:600; color:#555; margin-top:18px; margin-bottom:6px }
+   .mode-switch { display:flex; gap:10px; margin-bottom:12px }
+   .mode-option { flex:1; border:2px solid #ddd; border-radius:8px; padding:12px 14px;
+     cursor:pointer; transition:border-color .15s; display:flex; flex-direction:column; gap:4px }
+   .mode-option:has(input:checked) { border-color:#4a90d9; background:#f0f5ff }
+   .mode-option input[type=radio] { position:absolute; opacity:0; width:0 }
+   .mode-label { font-size:14px; font-weight:600 }
+   .mode-desc { font-size:12px; color:#888 }
   .copy-box { display:flex; gap:8px; align-items:stretch }
   .copy-box code { flex:1; padding:10px 12px; background:#f0f5ff; border:1px solid #c5d9f6;
                    border-radius:8px; font-size:13px; word-break:break-all; font-family:monospace; overflow-wrap:anywhere }
@@ -205,6 +299,27 @@ SETUP_HTML = """\
     <p class="sub">首次启动 · 填写 API 密钥后立即开始</p>
 
     <form id="setup-form">
+      <label>部署模式</label>
+      <div class="mode-switch">
+        <label class="mode-option">
+          <input type="radio" name="deploy_mode" value="cloud" checked onchange="onModeChange()">
+          <span class="mode-label">单用户模式</span>
+          <span class="mode-desc">Cloud Native · 个人使用，一个 AI 助手</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="deploy_mode" value="legion" onchange="onModeChange()">
+          <span class="mode-label">多用户模式</span>
+          <span class="mode-desc">Squad Legion · 多人协作，多个 Agent 分工</span>
+        </label>
+      </div>
+
+      <div id="legion-fields" class="hidden">
+        <label for="commander_user">管理员用户名</label>
+        <input id="commander_user" name="commander_user" type="text"
+               placeholder="你的 OAuth 登录用户名">
+        <p class="tip">此用户拥有最高权限，可以管理所有 Agent。</p>
+      </div>
+
       <label for="provider">服务商</label>
       <select id="provider" name="provider">
         <option value="deepseek">DeepSeek</option>
@@ -368,6 +483,11 @@ if (HF_OAUTH_AUTO) {
 document.getElementById('oauth-link-ms').style.display = isMS ? '' : 'none';
 document.getElementById('oauth-link-hf').style.display = isMS ? 'none' : '';
 
+function onModeChange() {
+  var mode = document.querySelector('input[name=deploy_mode]:checked').value;
+  document.getElementById('legion-fields').classList.toggle('hidden', mode !== 'legion');
+}
+
 function copyRedirect() {
   navigator.clipboard.writeText(redirectUrl).then(function(){
     var btn = document.getElementById('copy-btn');
@@ -463,8 +583,11 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
 
 async def post_setup(request: Request) -> JSONResponse:
     form = await request.json()
+    deploy_mode = form.get("deploy_mode", "cloud")
 
     required = ["provider", "api_key"]
+    if deploy_mode == "legion":
+        required.append("commander_user")
     missing = [k for k in required if not form.get(k, "").strip()]
     if missing:
         return JSONResponse({"ok": False, "error": f"缺少必填项: {', '.join(missing)}"}, status_code=400)
@@ -473,21 +596,38 @@ async def post_setup(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"未知服务商: {form['provider']}"}, status_code=400)
 
     try:
-        config, oauth_cfg = _build_config(form)
-        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        if deploy_mode == "legion":
+            squad_config, neo_config, oauth_cfg = _build_legion_config(form)
+
+            # Write squad_config.json
+            squad_path = os.path.join(DATA_ROOT, "squad_config.json")
+            with open(squad_path, "w", encoding="utf-8") as f:
+                json.dump(squad_config, f, indent=2, ensure_ascii=False)
+            print(f"[setup] ✅ squad_config.json 已写入: {json.dumps(list(squad_config.keys()))}", flush=True)
+
+            # Write neo's config.json
+            neo_cfg_path = os.path.join(DATA_ROOT, "instances", "neo", "config.json")
+            os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
+            with open(neo_cfg_path, "w", encoding="utf-8") as f:
+                json.dump(neo_config, f, indent=2, ensure_ascii=False)
+            print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
+        else:
+            config, oauth_cfg = _build_config(form)
+            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            print(f"[setup] ✅ config.json 已写入: {json.dumps(list(config.keys()))}", flush=True)
+            # 回读验证
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                verify = json.load(f)
+            print(f"[setup] 🔍 config.json 回读 keys: {json.dumps(list(verify.keys()))}", flush=True)
+            assert "oauth" not in verify, "BUG: oauth leaked into config.json!"
+
         os.makedirs(DATA_ROOT, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        print(f"[setup] ✅ config.json 已写入: {json.dumps(list(config.keys()))}", flush=True)
         oauth_path = os.path.join(DATA_ROOT, "oauth.json")
         with open(oauth_path, "w", encoding="utf-8") as f:
             json.dump(oauth_cfg, f)
         print(f"[setup] ✅ oauth.json 已写入: {json.dumps(list(oauth_cfg.keys()))}", flush=True)
-        # 回读验证
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            verify = json.load(f)
-        print(f"[setup] 🔍 config.json 回读 keys: {json.dumps(list(verify.keys()))}", flush=True)
-        assert "oauth" not in verify, "BUG: oauth leaked into config.json!"
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
