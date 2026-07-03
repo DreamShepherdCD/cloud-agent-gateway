@@ -363,6 +363,16 @@ BINDING_CHAT_CONTENT = f"""\
 
 ---
 
+# 🤖 Agent 管理
+
+Legion 多智能体编制管理。Commander (neo) 由初始化配置生成。
+
+👉 [`配置 Agent`](/config/agents)
+
+添加或管理 Worker Agent（名字、角色、模型），保存后**重启空间**生效。
+
+---
+
  # ⚙️ 系统重置
 
 如需重新配置 OAuth 登录凭证（API Key / 模型配置会保留并自动预填），访问：
