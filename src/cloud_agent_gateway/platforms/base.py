@@ -511,10 +511,11 @@ def _detect_squad() -> bool:
     seed by ``launch.sh`` before ``cloud-gateway-setup`` runs).
     Cloud Demo spaces have no launch.sh and no squad_config.json.
     """
-    # squad_config.json is seeded to /app/squad_config.json by launch.sh
-    # Persistent copy lives at {MOUNT_PATH}/squad_config.json
+    # squad_config.json is seeded to /app/squad_config.json by Dockerfile COPY
+    # or written by setup.py to the platform data root (HF: /data, MS: /mnt/workspace)
     for p in ("/app/squad_config.json",
-              os.path.join(os.environ.get("MOUNT_PATH", "/data"), "squad_config.json")):
+              os.path.join(os.environ.get("MOUNT_PATH", "/data"), "squad_config.json"),
+              "/mnt/workspace/squad_config.json"):
         if os.path.exists(p):
             return True
     return False
