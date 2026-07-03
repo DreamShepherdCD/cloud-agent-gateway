@@ -45,9 +45,5 @@ RUN python3 -c "from mcp.server.fastmcp import FastMCP; print('✓ mcp SDK')" &&
 
 EXPOSE 7860
 
-RUN useradd -m -u 1000 nanobot && chown -R nanobot:nanobot /app
-USER nanobot
-ENV HOME=/home/nanobot
-
 # Phase 1 (no oauth.json) → setup 表单; Phase 2 → 启动
 CMD ["bash", "-c", "[ -f /data/oauth.json ] || [ -f /mnt/workspace/oauth.json ] && exec python3 -m cloud_agent_gateway.template_launch || exec python3 -m cloud_agent_gateway.setup"]
