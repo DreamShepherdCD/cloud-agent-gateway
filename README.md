@@ -13,6 +13,8 @@ pinned: false
 
 上传 `Dockerfile` + `README.md` 到 HuggingFace 或 ModelScope 的 Docker 空间，即可拥有个人 AI 助手。
 
+> 📖 **第一次用？跟着这个一步步来：[👉 傻瓜式部署指南](docs/deploy-guide.md)**
+
 ## 📦 需要上传的文件
 
 | 平台 | 文件 | 作用 |
