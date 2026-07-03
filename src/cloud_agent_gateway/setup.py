@@ -205,37 +205,26 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
     api_key = form.get("api_key", "").strip()
 
     neo_config: dict[str, object] = {
-        "gateway": {
-            "host": "127.0.0.1",
-            "port": 20001,
-        },
+        "gateway": {"host": "127.0.0.1", "port": 0},
         "agents": {
             "defaults": {
                 "instructions": "I am nanobot — a helpful AI assistant.",
+                "workspace": "./workspace",
                 "model": model,
                 "provider": provider_key,
                 "max_tokens": 8192,
                 "temperature": 0.7,
-            },
+            }
         },
-        "auth": {
-            "provider": provider_key,
-            "providers": {
-                provider_key: {
-                    "name": provider_key,
-                    "api_base": api_base,
-                    "api_key": api_key if api_key else "",
-                    "models": [model] if model else [],
-                }
-            },
-            "default_model": model,
+        "providers": {
+            provider_key: {
+                "name": provider_key,
+                "api_base": api_base,
+                "api_key": api_key if api_key else "",
+                "model": model,
+            }
         },
         "channels": {"websocket": {"enabled": True}},
-        "recovery": {
-            "enabled": True,
-            "interval": 3,
-            "max_time_seconds": 300,
-        },
     }
 
     # oauth (same logic as _build_config)
