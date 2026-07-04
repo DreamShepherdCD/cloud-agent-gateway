@@ -390,6 +390,7 @@ Legion 多智能体编制管理。Commander (neo) 由初始化配置生成。
 | 组件 | 源码 |
 |------|------|
 | cloud-agent-gateway（框架层） | [GitHub](https://github.com/DreamShepherd2006/cloud-agent-gateway) |
+| nanobot-legion（部署层） | [GitHub](https://github.com/DreamShepherd2006/nanobot-legion) |
 | nanobot（AI 引擎 · nightly） | [GitHub](https://github.com/DreamShepherd2006/nanobot/tree/nightly) |
 
 🧭 **浏览源码** → 点击上方链接查看完整代码
