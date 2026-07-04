@@ -4,16 +4,20 @@ WORKDIR /app
 
 # ── 系统依赖 ──────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git nodejs npm \
+    curl git nodejs npm chromium fonts-wqy-microhei \
     && rm -rf /var/lib/apt/lists/*
 
-# ── CAG + nanobot ─────────────────────────────────────────────────────
-# 🔄 bump BUILD to force reinstall: 2
-RUN echo [bust=20] && pip install --no-cache-dir \
-    "git+https://github.com/DreamShepherdCD/cloud-agent-gateway.git@feat/setup-page" \
+# ── Marp 浏览器路径 ───────────────────────────────────────────────────
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# ── CAG v0.1.10 + nanobot ──────────────────────────────────────────────
+# 🔄 bump BUILD to force reinstall: 4
+RUN echo [bust=4] && pip install --no-cache-dir \
+    "git+https://github.com/DreamShepherd2006/cloud-agent-gateway.git@v0.1.10" \
     itsdangerous \
-    "git+https://github.com/DreamShepherd2006/nanobot.git@nightly" \
-    && echo "[CAG+nanobot] installed"
+    markitdown \
+    "git+https://github.com/DreamShepherd2006/nanobot.git@dbdb146f" \
+    && echo "[CAG+nanobot+markitdown] installed"
 
 # ── 0.0.0.0 gateway 绑定 ─────────────────────────────────────────────
 RUN SITE_PKG=$(python3 -c 'import site; print(site.getsitepackages()[0])') && \
@@ -29,11 +33,17 @@ RUN python3 -m cloud_agent_gateway.deploy.cloud.patch_weixin_reload \
     && python3 -m cloud_agent_gateway.deploy.cloud.patch_qq_reload \
     && echo "[patch] channels"
 
+# ── Marp: Markdown → PPTX/PDF/HTML ────────────────────────────────────
+RUN npm install -g @marp-team/marp-cli \
+    && echo "[marp] installed"
+
+# ── 验证 MCP 工具链 ───────────────────────────────────────────────────
+RUN python3 -c "from mcp.server.fastmcp import FastMCP; print('✓ mcp SDK')" && \
+    python3 -c "from cloud_agent_gateway.mcp import get_mcp_server_configs; \
+    cfg = get_mcp_server_configs(); print('✓ MCP servers:', list(cfg.keys()))" && \
+    echo "[verify] MCP toolchain OK"
+
 EXPOSE 7860
 
-RUN useradd -m -u 1000 nanobot && chown -R nanobot:nanobot /app
-USER nanobot
-ENV HOME=/home/nanobot
-
-# oauth.json 不存在 → Phase 1 setup；存在 → Phase 2 启动
+# Phase 1 (no oauth.json) → setup 表单; Phase 2 → 启动
 CMD ["bash", "-c", "[ -f /data/oauth.json ] || [ -f /mnt/workspace/oauth.json ] && exec python3 -m cloud_agent_gateway.template_launch || exec python3 -m cloud_agent_gateway.setup"]
