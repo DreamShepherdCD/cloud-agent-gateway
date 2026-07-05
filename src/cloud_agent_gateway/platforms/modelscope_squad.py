@@ -24,7 +24,6 @@ from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
-from cloud_agent_gateway.platforms.modelscope import ModelScopeDatasetSyncMixin
 
 logger = logging.getLogger("gatekeeper.modelscope")
 
@@ -59,12 +58,10 @@ def _get_oauth_client() -> OAuth:
 # ═══════════════════════════════════════════════════════════════
 
 
-class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
+class ModelScopePlatform(PlatformProtocol):
     """Platform implementation for ModelScope Studio (Squad)."""
 
     name = "modelscope"
-    _dataset_repo = "Stone2006/nanobot-multi-agent-nightly-data"
-    _dataset_token_env = "NANOBOT_Staging_modelscope_TOKEN"
 
     def __init__(self):
         super().__init__()
@@ -452,16 +449,14 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
 
 
     # ═══════════════════════════════════════════════════════════════
-    # Entrypoint setup — env unfreeze, dataset pull, template copy
+    # Entrypoint setup — env unfreeze, relay token mapping
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
     def setup() -> str:
-        """MS-specific initialisation: unfreeze env, pull dataset, copy templates."""
+        """MS-specific initialisation: unfreeze env, map relay token."""
         import os as _os
         import sys as _sys
-        import shutil as _shutil
-        import subprocess as _sp
 
         def _log(msg: str) -> None:
             _sys.stderr.write(msg + "\n")
@@ -502,100 +497,6 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
                 _os.environ["SQUAD_RELAY_TOKEN"] = tok
                 _log(f"   🔑 SQUAD_RELAY_TOKEN mapped from {ms_key}")
                 break
-
-        # 3. Pull dataset from ModelScope (always fresh — no cache fallback)
-        dataset_dir = "/tmp/nanobot-legion-instances"
-        if _os.path.isdir(dataset_dir):
-            _shutil.rmtree(dataset_dir)
-
-        ms_token = _os.environ.get("NANOBOT_Staging_modelscope_TOKEN", "")
-        if not ms_token:
-            try:
-                with open(proc_env, "rb") as f:
-                    for item in f.read().split(b"\0"):
-                        if b"NANOBOT_Staging_modelscope_TOKEN" in item:
-                            ms_token = item.decode("utf-8", errors="replace").split("=", 1)[1]
-                            break
-            except Exception:
-                pass
-        if not ms_token:
-            raise RuntimeError("❌ 缺少 MS Token，无法拉取数据集配置")
-
-        _log("🔄 [Dataset] 从私有数据集拉取实例模板...")
-        repo = "Stone2006/nanobot-multi-agent-nightly-data"
-        url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{repo}.git"
-        try:
-            _sp.run(["git", "clone", "--depth=1", url, dataset_dir],
-                    check=True, capture_output=True, timeout=60)
-        except Exception as exc:
-            raise RuntimeError(f"❌ 数据集拉取失败: {exc}") from exc
-
-        # 4. Copy template from dataset
-        mount_path = "/mnt/workspace"
-        instances_src = f"{dataset_dir}/instances"
-        if _os.path.isdir(f"{instances_src}/_template"):
-            _os.makedirs(f"{mount_path}/instances", exist_ok=True)
-            tmpl_dst = f"{mount_path}/instances/_template"
-            if _os.path.exists(tmpl_dst):
-                _shutil.rmtree(tmpl_dst)
-            _shutil.copytree(f"{instances_src}/_template", tmpl_dst)
-            _log("🔄 [Template] 模板已从私有数据集同步")
-        elif _os.path.isdir(f"{mount_path}/instances/_template"):
-            _log("ℹ️ [Template] 无数据集，使用持久化存储现有模板")
-        else:
-            _log("⚠️ [Template] 无模板可用 — agent 将跳过")
-
-        # 5. Deep-merge agent configs: dataset is authoritative, instances-only keys preserved.
-        #    This replaces the old "skip if exists" logic so that config updates in the dataset
-        #    (new channels, settings) propagate while per-agent credentials (token, app_id) survive.
-        def _deep_merge(base: dict, override: dict) -> dict:
-            """Merge override into base. Dataset (override) wins for scalars;
-            for nested dicts (e.g. channels), merge recursively; lists are replaced."""
-            for key, value in override.items():
-                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                    _deep_merge(base[key], value)
-                else:
-                    base[key] = value
-            return base
-
-        for item in _os.listdir(instances_src):
-            item_path = _os.path.join(instances_src, item)
-            cfg_file = _os.path.join(item_path, "config.json")
-            if _os.path.isdir(item_path) and item not in ("_template", ".git") and _os.path.isfile(cfg_file):
-                dst_dir = f"{mount_path}/instances/{item}"
-                dst_cfg = f"{dst_dir}/config.json"
-                _os.makedirs(dst_dir, exist_ok=True)
-                with open(cfg_file) as f:
-                    ds_cfg = json.load(f)
-                if _os.path.isfile(dst_cfg):
-                    with open(dst_cfg) as f:
-                        inst_cfg = json.load(f)
-                    merged = _deep_merge(inst_cfg, ds_cfg)
-                    with open(dst_cfg, "w") as f:
-                        json.dump(merged, f, indent=2, ensure_ascii=False)
-                    _log(f"🔄 [{item}] config.json merged (dataset → instances)")
-                else:
-                    _shutil.copy2(cfg_file, dst_cfg)
-                    _log(f"🔄 [{item}] config.json restored from dataset")
-
-        # 5b. Restore squad_config from dataset (sole source — no fallback)
-        squad_cfg_ds = f"{dataset_dir}/squad_config.ms-staging.json"
-        squad_cfg_persist = f"{mount_path}/squad_config.json"
-        if not _os.path.isfile(squad_cfg_ds):
-            raise RuntimeError(f"❌ 数据集中缺少 squad_config.ms-staging.json，无法启动")
-        _shutil.copy2(squad_cfg_ds, squad_cfg_persist)
-        _log("✅ [Config] squad_config 已从数据集同步")
-
-        # 6. Seed neo workspace from dataset
-        neo_ws = f"{mount_path}/instances/neo/workspace"
-        seed_flag = f"{neo_ws}/.legion_seeded"
-        neo_ws_src = f"{instances_src}/neo/workspace"
-        if _os.path.isdir(neo_ws_src) and not _os.path.exists(seed_flag):
-            _os.makedirs(neo_ws, exist_ok=True)
-            _shutil.copytree(neo_ws_src, neo_ws, dirs_exist_ok=True)
-            with open(seed_flag, "w") as f:
-                f.write("seeded")
-            _log("🧠 [neo] 军团知识已注入")
 
         return "\n".join(exports)
 
