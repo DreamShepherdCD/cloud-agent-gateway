@@ -430,19 +430,9 @@ def _build_binding_content() -> str:
 
 👆 点击上方链接即可操作，无需在此聊天。
 
----
+ ---
 
-# 🤖 Agent 管理
-
-Legion 多智能体编制管理。Commander (neo) 由初始化配置生成。
-
-👉 [`配置 Agent`](/config/agents)
-
-添加或管理 Worker Agent（名字、角色、模型），保存后**重启空间**生效。
-
----
-
- # 📁 文件管理
+  # 📁 文件管理
 
  上传、下载、管理你的文件（PPTX、视频、文档等）：
 
