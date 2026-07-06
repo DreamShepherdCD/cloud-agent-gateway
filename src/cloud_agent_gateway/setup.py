@@ -9,6 +9,8 @@ Cloud Agent Gateway — 首次配置引导页 (setup.py)
 平台自动检测（MS / HF），数据根目录：
   - ModelScope: /mnt/workspace
   - HF Spaces:   /data/instances/{space_id}
+
+Provider 列表来自 nanobot 官方 ``providers/registry.py``，自动跟随上游更新。
 """
 
 from __future__ import annotations
@@ -16,50 +18,95 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import Any
 
-# ── provider presets ────────────────────────────────────────────────
-PROVIDERS = {
-    "deepseek": {
-        "label": "DeepSeek",
-        "api_base": "https://api.deepseek.com",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
-        "default_model": "deepseek-chat",
-    },
-    "openai": {
-        "label": "OpenAI",
-        "api_base": "https://api.openai.com/v1",
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"],
-        "default_model": "gpt-4o-mini",
-    },
-    "siliconflow": {
-        "label": "SiliconFlow (硅基流动)",
-        "api_base": "https://api.siliconflow.cn/v1",
-        "models": [
-            "deepseek-ai/DeepSeek-V3",
-            "deepseek-ai/DeepSeek-R1",
-            "Qwen/Qwen3-235B-A22B",
-        ],
-        "default_model": "deepseek-ai/DeepSeek-V3",
-    },
-    "zhipu": {
-        "label": "智谱AI (GLM)",
-        "api_base": "https://open.bigmodel.cn/api/paas/v4",
-        "models": ["glm-4-plus", "glm-4-flash", "glm-4-air"],
-        "default_model": "glm-4-flash",
-    },
-    "dashscope": {
-        "label": "阿里云百炼 (Qwen)",
-        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": ["qwen3-235b-a22b", "qwen-max", "qwen-plus"],
-        "default_model": "qwen-plus",
-    },
-    "custom": {
-        "label": "自定义 (OpenAI 兼容)",
-        "api_base": "",
-        "models": [],
-        "default_model": "",
-    },
+# ── provider registry (from official nanobot) ───────────────────────
+try:
+    from nanobot.providers.registry import PROVIDERS as _NANOBOT_PROVIDERS, find_by_name
+except ImportError:  # pragma: no cover — only fails when nanobot not installed
+    _NANOBOT_PROVIDERS = ()
+    def find_by_name(name: str) -> Any:  # noqa: E302
+        return None
+
+# ── UX augmentation (not in ProviderSpec) ───────────────────────────
+# Suggested models and API-key creation URLs are CAG-specific UX helpers.
+_PROVIDER_MODELS: dict[str, dict[str, Any]] = {
+    "deepseek":    {"models": ["deepseek-chat", "deepseek-reasoner"], "default": "deepseek-chat"},
+    "openai":      {"models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"], "default": "gpt-4o-mini"},
+    "siliconflow": {"models": ["deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen3-235B-A22B"], "default": "deepseek-ai/DeepSeek-V3"},
+    "zhipu":       {"models": ["glm-4-plus", "glm-4-flash", "glm-4-air"], "default": "glm-4-flash"},
+    "dashscope":   {"models": ["qwen3-235b-a22b", "qwen-max", "qwen-plus"], "default": "qwen-plus"},
+    "moonshot":    {"models": ["kimi-k2.5", "kimi-k2.6"], "default": "kimi-k2.5"},
+    "gemini":      {"models": ["gemini-2.5-flash", "gemini-2.5-pro"], "default": "gemini-2.5-flash"},
+    "mistral":     {"models": ["mistral-large-latest", "mistral-small-latest"], "default": "mistral-small-latest"},
+    "anthropic":   {"models": ["claude-sonnet-4-20250514", "claude-haiku-3.5"], "default": "claude-haiku-3.5"},
+    "volcengine":  {"models": ["deepseek-v3-250324", "deepseek-r1-250528"], "default": "deepseek-v3-250324"},
+    "stepfun":     {"models": ["step-3"], "default": "step-3"},
+    "minimax":     {"models": ["minimax-m1"], "default": "minimax-m1"},
+    "qianfan":     {"models": ["ernie-4.5-8k", "ernie-speed-8k"], "default": "ernie-speed-8k"},
+    "novita":      {"models": ["deepseek-r1", "deepseek-v3"], "default": "deepseek-r1"},
+    "openrouter":  {"models": ["openai/gpt-4o-mini"], "default": "openai/gpt-4o-mini"},
+    "aihubmix":    {"models": ["deepseek-chat"], "default": "deepseek-chat"},
+    "skywork":     {"models": ["skywork-chat"], "default": "skywork-chat"},
+    "groq":        {"models": ["llama-3.3-70b-versatile"], "default": "llama-3.3-70b-versatile"},
+    "huggingface": {"models": ["Qwen/Qwen3-235B-A22B"], "default": "Qwen/Qwen3-235B-A22B"},
+    "longcat":     {"models": ["longcat-chat"], "default": "longcat-chat"},
+    "ant_ling":    {"models": ["ling-plus"], "default": "ling-plus"},
+    "xiaomi_mimo": {"models": ["mimo-chat"], "default": "mimo-chat"},
+    "byteplus":    {"models": ["deepseek-v3-250324"], "default": "deepseek-v3-250324"},
 }
+
+_PROVIDER_KEY_URLS: dict[str, str] = {
+    "deepseek":    "https://platform.deepseek.com/api_keys",
+    "openai":      "https://platform.openai.com/api-keys",
+    "siliconflow": "https://cloud.siliconflow.cn/account/ak",
+    "zhipu":       "https://open.bigmodel.cn/usercenter/apikeys",
+    "dashscope":   "https://bailian.console.aliyun.com/?apiKey=1",
+    "moonshot":    "https://platform.moonshot.cn/console/api-keys",
+    "gemini":      "https://aistudio.google.com/apikey",
+    "mistral":     "https://console.mistral.ai/api-keys/",
+    "anthropic":   "https://console.anthropic.com/settings/keys",
+    "volcengine":  "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+    "stepfun":     "https://platform.stepfun.com/interface-key",
+    "minimax":     "https://platform.minimax.io/user-center/basic-information/interface-key",
+    "qianfan":     "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
+    "novita":      "https://novita.ai/dashboard/key",
+    "openrouter":  "https://openrouter.ai/keys",
+    "aihubmix":    "https://aihubmix.com/",
+    "groq":        "https://console.groq.com/keys",
+    "huggingface": "https://huggingface.co/settings/tokens",
+}
+
+# Providers that need more config than what setup form offers.
+# is_oauth / is_local / is_direct (except "custom") are auto-skipped.
+_SKIP_PROVIDERS = frozenset({"bedrock", "azure_openai", "ovms", "nvidia",
+                               "openai_codex", "github_copilot",
+                               "minimax_anthropic",
+                               "volcengine_coding_plan", "byteplus_coding_plan"})
+
+
+def _get_setup_providers() -> list[Any]:
+    """Return nanobot ProviderSpec list filtered for setup form.
+
+    Skips: OAuth-only, local-only, and providers needing special config.
+    """
+    result: list[Any] = []
+    for spec in _NANOBOT_PROVIDERS:
+        if spec.is_oauth or spec.is_local:
+            continue
+        if spec.name in _SKIP_PROVIDERS:
+            continue
+        # custom is included (is_direct=True but always shown)
+        result.append(spec)
+    return result
+
+
+def _provider_for_form(provider_key: str) -> Any:
+    """Look up a provider. Returns None if unknown."""
+    if provider_key == "custom":
+        # custom always accepted — no registry spec needed
+        return type("Spec", (), {"name": "custom", "default_api_base": ""})()
+    return find_by_name(provider_key)
 
 # ── platform detection ──────────────────────────────────────────────
 def _detect_data_root() -> str:
@@ -105,15 +152,16 @@ def _detect_deploy_platform() -> str:
 def _build_config(form: dict[str, str]) -> dict:
     """Build a minimal CAG config.json from user form input."""
     provider_key = form["provider"]
-    presets = PROVIDERS[provider_key]
-    api_base = form.get("api_base", "").strip() or presets["api_base"]
-    model = form.get("model", "").strip() or presets["default_model"]
+    spec = _provider_for_form(provider_key)
+    api_base = form.get("api_base", "").strip()
+    if not api_base and spec is not None and getattr(spec, "default_api_base", ""):
+        api_base = spec.default_api_base
+
+    models_data = _PROVIDER_MODELS.get(provider_key, {})
+    model = form.get("model", "").strip() or models_data.get("default", "")
 
     config: dict[str, object] = {
-        "gateway": {
-            "host": "0.0.0.0",
-            "port": 17860,
-        },
+        "gateway": {"host": "0.0.0.0", "port": 17860},
         "agents": {
             "defaults": {
                 "instructions": "You are a helpful AI assistant.",
@@ -130,37 +178,13 @@ def _build_config(form: dict[str, str]) -> dict:
             },
         },
         "channels": {
-            "websocket": {
-                "enabled": True,
-                "port": 7870,
-                "host": "127.0.0.1",
-                "token": "",
-                "websocket_requires_token": False,
-            },
-            "weixin": {
-                "enabled": True,
-                "allow_from": ["*"],
-                "token": "",
-                "state_dir": "/home/nanobot/.nanobot/weixin",
-            },
-            "feishu": {
-                "enabled": True,
-                "app_id": "",
-                "app_secret": "",
-                "allow_from": ["*"],
-            },
-            "dingtalk": {
-                "enabled": True,
-                "client_id": "",
-                "client_secret": "",
-                "allow_from": ["*"],
-            },
-            "qq": {
-                "enabled": True,
-                "app_id": "",
-                "secret": "",
-                "allow_from": ["*"],
-            },
+            "websocket": {"enabled": True, "port": 7870, "host": "127.0.0.1",
+                          "token": "", "websocket_requires_token": False},
+            "weixin": {"enabled": True, "allow_from": ["*"], "token": "",
+                       "state_dir": "/home/nanobot/.nanobot/weixin"},
+            "feishu": {"enabled": True, "app_id": "", "app_secret": "", "allow_from": ["*"]},
+            "dingtalk": {"enabled": True, "client_id": "", "client_secret": "", "allow_from": ["*"]},
+            "qq": {"enabled": True, "app_id": "", "secret": "", "allow_from": ["*"]},
         },
         "tools": {
             "ssrf_whitelist": ["127.0.0.1/32", "::1/128"],
@@ -169,20 +193,22 @@ def _build_config(form: dict[str, str]) -> dict:
         },
     }
 
-    # OAuth auto-detect: only on HF Spaces with valid env vars.
-    # ModelScope has no such mechanism — always use manual form.
-    oauth_cfg = {}
+    oauth_cfg = _build_oauth(form)
+    return config, oauth_cfg
+
+
+def _build_oauth(form: dict[str, str]) -> dict[str, str]:
+    """Build oauth.json dict from form + auto-detect (HF Spaces)."""
     if _is_hf_space():
         env_id = os.environ.get("OAUTH_CLIENT_ID", "").strip()
         env_secret = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
         if env_id and env_secret:
-            oauth_cfg = {"client_id": env_id, "client_secret": env_secret}
-    if not oauth_cfg:
-        client_id = form.get("oauth_client_id", "").strip()
-        client_secret = form.get("oauth_client_secret", "").strip()
-        oauth_cfg = {"client_id": client_id, "client_secret": client_secret} if client_id and client_secret else {}
-
-    return config, oauth_cfg
+            return {"client_id": env_id, "client_secret": env_secret}
+    client_id = form.get("oauth_client_id", "").strip()
+    client_secret = form.get("oauth_client_secret", "").strip()
+    if client_id and client_secret:
+        return {"client_id": client_id, "client_secret": client_secret}
+    return {}
 
 
 def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
@@ -204,11 +230,15 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
         "peers": _build_squad_peers(),
     }
 
-    # neo's config.json (same as _build_config but for neo agent)
+    # neo's config.json — provider from official registry
     provider_key = form["provider"]
-    presets = PROVIDERS[provider_key]
-    api_base = form.get("api_base", "").strip() or presets["api_base"]
-    model = form.get("model", "").strip() or presets["default_model"]
+    spec = _provider_for_form(provider_key)
+    api_base = form.get("api_base", "").strip()
+    if not api_base and spec is not None and getattr(spec, "default_api_base", ""):
+        api_base = spec.default_api_base
+
+    models_data = _PROVIDER_MODELS.get(provider_key, {})
+    model = form.get("model", "").strip() or models_data.get("default", "")
     api_key = form.get("api_key", "").strip()
 
     neo_config: dict[str, object] = {
@@ -225,28 +255,53 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
         },
         "providers": {
             provider_key: {
-                "name": provider_key,
-                "api_base": api_base,
                 "api_key": api_key if api_key else "",
-                "model": model,
+                "api_base": api_base,
             }
         },
         "channels": {"websocket": {"enabled": True, "port": 0}},
     }
 
-    # oauth (same logic as _build_config)
-    oauth_cfg = {}
-    if _is_hf_space():
-        env_id = os.environ.get("OAUTH_CLIENT_ID", "").strip()
-        env_secret = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
-        if env_id and env_secret:
-            oauth_cfg = {"client_id": env_id, "client_secret": env_secret}
-    if not oauth_cfg:
-        client_id = form.get("oauth_client_id", "").strip()
-        client_secret = form.get("oauth_client_secret", "").strip()
-        oauth_cfg = {"client_id": client_id, "client_secret": client_secret} if client_id and client_secret else {}
-
+    oauth_cfg = _build_oauth(form)
     return squad_config, neo_config, oauth_cfg
+
+
+def _build_provider_form_data() -> tuple[str, str, str]:
+    """Generate dynamic HTML/JS provider data from nanobot official registry.
+
+    Returns (provider_options_html, presets_js, key_urls_js).
+    """
+    select_lines = ['      <select id="provider" name="provider">']
+    p_entries: list[str] = []
+    k_entries: list[str] = []
+
+    for spec in _get_setup_providers():
+        select_lines.append(f'        <option value="{spec.name}">{spec.label}</option>')
+
+        models_data = _PROVIDER_MODELS.get(spec.name, {})
+        models = models_data.get("models", [])
+        default_m = models_data.get("default", models[0] if models else "")
+        base = spec.default_api_base or ""
+
+        p_entries.append(
+            f'  {spec.name}:{{base:"{base}",ml:{json.dumps(models)},dm:"{default_m}"}}'
+        )
+        k_entries.append(
+            f'  {spec.name}:"{_PROVIDER_KEY_URLS.get(spec.name, "")}"'
+        )
+
+    # custom (not in nanobot registry — always append)
+    select_lines.append('        <option value="custom">自定义 (OpenAI 兼容)</option>')
+    p_entries.append('  custom:{base:"",ml:[],dm:""}')
+    k_entries.append('  custom:""')
+
+    select_lines.append('      </select>')
+
+    options_html = "\n".join(select_lines)
+    presets_js = "var P = {\n" + ",\n".join(p_entries) + "\n};"
+    key_urls_js = "var KEY_URL = {\n" + ",\n".join(k_entries) + "\n};"
+
+    return options_html, presets_js, key_urls_js
 
 
 # ── HTML ─────────────────────────────────────────────────────────────
@@ -322,14 +377,7 @@ SETUP_HTML = """\
       </div>
 
       <label for="provider">服务商</label>
-      <select id="provider" name="provider">
-        <option value="deepseek">DeepSeek</option>
-        <option value="openai">OpenAI</option>
-        <option value="siliconflow">SiliconFlow · 硅基流动</option>
-        <option value="zhipu">智谱AI (GLM)</option>
-        <option value="dashscope">阿里云百炼 (Qwen)</option>
-        <option value="custom">自定义 (OpenAI 兼容)</option>
-      </select>
+{PROVIDER_OPTIONS}
 
       <label for="api_key">API Key</label>
       <input id="api_key" name="api_key" type="password"
@@ -409,25 +457,10 @@ SETUP_HTML = """\
 </div>
 
 <script>
-// -- provider presets (inlined for no extra request) --
-var P = {
-  deepseek:{base:"https://api.deepseek.com",ml:["deepseek-chat","deepseek-reasoner"],dm:"deepseek-chat"},
-  openai:{base:"https://api.openai.com/v1",ml:["gpt-4o","gpt-4o-mini","gpt-4.1","o4-mini"],dm:"gpt-4o-mini"},
-  siliconflow:{base:"https://api.siliconflow.cn/v1",ml:["deepseek-ai/DeepSeek-V3","deepseek-ai/DeepSeek-R1","Qwen/Qwen3-235B-A22B"],dm:"deepseek-ai/DeepSeek-V3"},
-  zhipu:{base:"https://open.bigmodel.cn/api/paas/v4",ml:["glm-4-plus","glm-4-flash","glm-4-air"],dm:"glm-4-flash"},
-  dashscope:{base:"https://dashscope.aliyuncs.com/compatible-mode/v1",ml:["qwen3-235b-a22b","qwen-max","qwen-plus"],dm:"qwen-plus"},
-  custom:{base:"",ml:[],dm:""}
-};
-
-// provider → API Key 创建链接
-var KEY_URL = {
-  deepseek:"https://platform.deepseek.com/api_keys",
-  openai:"https://platform.openai.com/api-keys",
-  siliconflow:"https://cloud.siliconflow.cn/account/ak",
-  zhipu:"https://open.bigmodel.cn/usercenter/apikeys",
-  dashscope:"https://bailian.console.aliyun.com/?apiKey=1",
-  custom:""
-};
+// -- provider presets (generated from nanobot official registry) --
+{PROVIDER_PRESETS_JS}
+// -- provider → API Key 创建链接 --
+{PROVIDER_KEY_URLS_JS}
 
 var sel = document.getElementById('provider');
 var mInput = document.getElementById('model');
@@ -579,7 +612,16 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
             print(f"[setup] 🔄 预填 config.json: provider={provider}, model={model}, api_key={'***' if api_key else '(空)'}", flush=True)
     except Exception as e:
         print(f"[setup] ⚠️ 预填失败（忽略）: {e}", flush=True)
-    return HTMLResponse(SETUP_HTML.replace("{PREFILL_JS}", prefill_js).replace("{HF_OAUTH_AUTO}", hf_oauth_auto))
+
+    # Generate dynamic provider data from nanobot official registry
+    provider_opts, presets_js, key_urls_js = _build_provider_form_data()
+    html = (SETUP_HTML
+            .replace("{PROVIDER_OPTIONS}", provider_opts)
+            .replace("{PROVIDER_PRESETS_JS}", presets_js)
+            .replace("{PROVIDER_KEY_URLS_JS}", key_urls_js)
+            .replace("{PREFILL_JS}", prefill_js)
+            .replace("{HF_OAUTH_AUTO}", hf_oauth_auto))
+    return HTMLResponse(html)
 
 
 async def post_setup(request: Request) -> JSONResponse:
@@ -593,7 +635,7 @@ async def post_setup(request: Request) -> JSONResponse:
     if missing:
         return JSONResponse({"ok": False, "error": f"缺少必填项: {', '.join(missing)}"}, status_code=400)
 
-    if form["provider"] not in PROVIDERS:
+    if _provider_for_form(form["provider"]) is None:
         return JSONResponse({"ok": False, "error": f"未知服务商: {form['provider']}"}, status_code=400)
 
     try:
