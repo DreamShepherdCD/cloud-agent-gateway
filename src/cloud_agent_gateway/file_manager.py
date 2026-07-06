@@ -35,6 +35,18 @@ def _root() -> Path:
     return Path(FILES_DIR).resolve()
 
 
+def _ensure_root() -> Path:
+    """Return the files root directory, creating it if missing.
+
+    ``_detect_files_dir()`` runs at module import time and may race with
+    Factory Rebuild volume mounts — the directory can disappear later.
+    Calling this at the top of every handler is a cheap idempotent guard.
+    """
+    r = _root()
+    os.makedirs(r, exist_ok=True)
+    return r
+
+
 def _safe_path(subpath: str) -> Path:
     """Resolve subpath within FILES_DIR, blocking traversal."""
     target = (_root() / subpath).resolve()
@@ -294,6 +306,7 @@ def _render_template(cur_rel: str, breadcrumb: str, table: str, empty: str) -> s
 
 # ── Route handlers ─────────────────────────────────────────────────
 async def list_page(request: Request) -> HTMLResponse:
+    _ensure_root()
     cur = _current_dir(request)
     return HTMLResponse(_render_listing(cur))
 
@@ -315,6 +328,7 @@ async def view_file(request: Request) -> FileResponse | JSONResponse | RedirectR
 
 
 async def upload_file(request: Request) -> JSONResponse:
+    _ensure_root()
     try:
         form = await request.form()
     except Exception:
@@ -359,6 +373,7 @@ async def delete_entry(request: Request) -> JSONResponse:
 
 
 async def mkdir(request: Request) -> JSONResponse:
+    _ensure_root()
     try:
         body = await request.json()
     except Exception:
@@ -382,6 +397,7 @@ async def mkdir(request: Request) -> JSONResponse:
 
 
 async def touch_file(request: Request) -> JSONResponse:
+    _ensure_root()
     try:
         body = await request.json()
     except Exception:
