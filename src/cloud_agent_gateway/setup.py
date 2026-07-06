@@ -655,6 +655,12 @@ async def post_setup(request: Request) -> JSONResponse:
                 json.dump(neo_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
         else:
+            # 清理旧 Legion 残留（从多用户模式切换到单用户模式）
+            legacy_squad = os.path.join(DATA_ROOT, "squad_config.json")
+            if os.path.exists(legacy_squad):
+                os.remove(legacy_squad)
+                print("[setup] 🧹 已清理旧的 squad_config.json（切换到单用户模式）", flush=True)
+
             config, oauth_cfg = _build_config(form)
             os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
