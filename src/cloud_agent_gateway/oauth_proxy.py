@@ -430,19 +430,9 @@ def _build_binding_content() -> str:
 
 👆 点击上方链接即可操作，无需在此聊天。
 
----
+ ---
 
-# 🤖 Agent 管理
-
-Legion 多智能体编制管理。Commander (neo) 由初始化配置生成。
-
-👉 [`配置 Agent`](/config/agents)
-
-添加或管理 Worker Agent（名字、角色、模型），保存后**重启空间**生效。
-
----
-
- # 📁 文件管理
+  # 📁 文件管理
 
  上传、下载、管理你的文件（PPTX、视频、文档等）：
 
@@ -477,8 +467,15 @@ Legion 多智能体编制管理。Commander (neo) 由初始化配置生成。
 """
 
 
+# Cached binding chat ID — set once by _ensure_binding_session, used by WS filter
+_binding_chat_cid: str | None = None
+
+
 def _get_binding_chat_id() -> str | None:
-    """Return the binding chat ID from sidebar-state, or None."""
+    """Return the binding chat ID from cache, or fall back to sidebar-state."""
+    global _binding_chat_cid
+    if _binding_chat_cid:
+        return _binding_chat_cid
     from cloud_agent_gateway.platforms import platform
     _agent = "default"
     _state = platform.read_sidebar_state(_agent)
@@ -488,6 +485,7 @@ def _get_binding_chat_id() -> str | None:
         _cid = _pk.split(":", 1)[1]
         _lines = platform.read_session(_agent, _cid)
         if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_CHAT_TITLE:
+            _binding_chat_cid = _cid
             return _cid
     return None
 
@@ -496,17 +494,30 @@ def _ensure_binding_session():
     """Pre-create the binding chat session + pin so sidebar shows it on first load.
 
     Called from OAuth callback (before the page loads) and from setup_title()
-    (after WebSocket connects). Idempotent — only creates if no pinned binding
-    chat exists.
+    (after WebSocket connects). Idempotent — only creates if no valid pinned
+    binding chat exists or content has changed.
     """
+    global _binding_chat_cid
+
     import uuid as _uuid, time as _time
     from cloud_agent_gateway.platforms import platform
     _agent = "default"
     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
+    # Check if cached session is still valid (pinned + content unchanged)
+    _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
+    if _binding_chat_cid:
+        _expected_key = f"websocket:{_binding_chat_cid}"
+        _state = platform.read_sidebar_state(_agent)
+        if _expected_key in _state.get("pinned_keys", []):
+            _lines = platform.read_session(_agent, _binding_chat_cid)
+            if _lines:
+                _existing_content = _lines[1].get("content", "") if len(_lines) > 1 else ""
+                if _existing_content == _build_binding_content():
+                    return  # Already up to date — no-op
+
     # Clean up ALL stale binding sessions — detect by matching title against
     # both current BINDING_CHAT_TITLE and known historical titles.
-    _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
     _state = platform.read_sidebar_state(_agent)
     _any_deleted = False
     for _pk in list(_state.get("pinned_keys", [])):
@@ -564,6 +575,9 @@ def _ensure_binding_session():
     _sidebar_state.setdefault("schema_version", 1)
     platform.write_sidebar_state(_agent, _sidebar_state)
 
+    # Cache for WS filter (avoid re-reading sidebar on every message)
+    _binding_chat_cid = _cid
+
     _log(f"pre-created binding session + pin (cid={_cid[:12]})")
 
 
@@ -573,6 +587,8 @@ def _clear_binding_session(data_root_override: str | None = None) -> None:
     Used by /reset-setup to clear stale system config content without touching
     config.json. Re-created on next OAuth login via _ensure_binding_session().
     """
+    global _binding_chat_cid
+    _binding_chat_cid = None  # Invalidate cache
     from cloud_agent_gateway.platforms import platform
     _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
     _agent = "default"

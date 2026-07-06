@@ -408,36 +408,38 @@ SETUP_HTML = """\
        </div>
 
        <div id="oauth-section">
-        <p class="step-num">① 复制你的空间地址 &amp; 回调地址</p>
-        <div class="copy-box">
-          <code id="space-url">检测中...</code>
-          <button type="button" id="copy-space-btn" onclick="copySpaceUrl()">📋 复制</button>
-        </div>
-        <div class="copy-box">
-          <code id="redirect-url">检测中...</code>
-          <button type="button" id="copy-btn" onclick="copyRedirect()">📋 复制</button>
-        </div>
+         <p class="step-num">① 空间地址 → 填到「应用官网」</p>
+         <div class="copy-box">
+           <code id="space-url">检测中...</code>
+           <button type="button" id="copy-space-btn" onclick="copySpaceUrl()">📋 复制</button>
+         </div>
 
-        <p class="step-num">② 创建 OAuth 应用并粘贴</p>
+         <p class="step-num">② 回调地址 → 填到「重定向URL」</p>
+         <div class="copy-box">
+           <code id="redirect-url">检测中...</code>
+           <button type="button" id="copy-btn" onclick="copyRedirect()">📋 复制</button>
+         </div>
+
+         <p class="step-num">③ 创建 OAuth 应用</p>
         <p class="tip" id="oauth-link-ms">
           👉 打开
           <a href="https://modelscope.cn/my/createApplications?status=create" target="_blank">ModelScope 创建 OAuth 应用</a>
           ，填写：
           <ul style="font-size:0.85rem;margin:4px 0 0 1em;padding:0">
             <li><b>应用名称</b>：任意（如 我的AI助手）</li>
-            <li><b>应用官网</b>：粘贴上面的空间地址</li>
-            <li><b>授权范围</b>：勾选 <code>profile</code>（用户公开信息）+ <code>read-repos</code>（读取个人仓库）</li>
-            <li><b>重定向URL</b>：粘贴上面的回调地址</li>
+             <li><b>应用官网</b>：粘贴 <b>① 空间地址</b></li>
+             <li><b>授权范围</b>：勾选 <code>profile</code>（用户公开信息）+ <code>read-repos</code>（读取个人仓库）</li>
+             <li><b>重定向URL</b>：粘贴 <b>② 回调地址</b></li>
           </ul>
           → 创建后获取 App ID / App Secret，填回下方
         </p>
         <p class="tip" id="oauth-link-hf" style="display:none">
           👉 打开
           <a href="https://huggingface.co/settings/applications/new" target="_blank">HuggingFace OAuth 应用</a>
-          → 粘贴上面的回调地址 → 获取 Client ID / Client Secret
+           → 粘贴 <b>② 回调地址</b> → 获取 Client ID / Client Secret
         </p>
 
-        <p class="step-num">③ 填回下方</p>
+         <p class="step-num">④ 填回下方</p>
         <label for="oauth_client_id">App ID / Client ID</label>
         <input id="oauth_client_id" name="oauth_client_id" type="text"
                placeholder="留空可跳过，后续再配">
@@ -520,6 +522,13 @@ document.getElementById('oauth-link-hf').style.display = isMS ? 'none' : '';
 function onModeChange() {
   var mode = document.querySelector('input[name=deploy_mode]:checked').value;
   document.getElementById('legion-fields').classList.toggle('hidden', mode !== 'legion');
+  // 更新回调地址：多 agent 使用 /api/squad/auth/callback
+  if (mode === 'legion') {
+    redirectUrl = spaceUrl + '/api/squad/auth/callback';
+  } else {
+    redirectUrl = spaceUrl + (isMS ? '/api/auth/callback' : '/auth/callback');
+  }
+  redirectEl.textContent = redirectUrl;
 }
 
 function copyRedirect() {
