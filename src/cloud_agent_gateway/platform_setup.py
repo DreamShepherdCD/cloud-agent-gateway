@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import sys
 
+import nanobot_legion  # activate bare-import compat shim before platform detection
 from cloud_agent_gateway.platforms import platform
 
 

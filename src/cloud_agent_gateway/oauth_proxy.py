@@ -413,9 +413,11 @@ def _build_binding_content() -> str:
     """Build the binding chat markdown with dynamic source links."""
     cag_info = _get_package_source("cloud-agent-gateway")
     nanobot_info = _get_package_source("nanobot-ai")
+    nanobot_legion_info = _get_package_source("nanobot-legion")
 
     cag_link = _build_source_link(cag_info, "DreamShepherd2006/cloud-agent-gateway")
     nanobot_link = _build_source_link(nanobot_info, "DreamShepherd2006/nanobot", "nightly")
+    nanobot_legion_link = _build_source_link(nanobot_legion_info, "DreamShepherd2006/nanobot-legion")
 
     return f"""\
 # 📱 社交通道配置
@@ -430,13 +432,23 @@ def _build_binding_content() -> str:
 
 ---
 
+# 🤖 Agent 管理
+
+Legion 多智能体编制管理。Commander (neo) 由初始化配置生成。
+
+👉 [`配置 Agent`](/config/agents)
+
+添加或管理 Worker Agent（名字、角色、模型），保存后**重启空间**生效。
+
+---
+
  # 📁 文件管理
 
-上传、下载、管理你的文件（PPTX、视频、文档等）：
+ 上传、下载、管理你的文件（PPTX、视频、文档等）：
 
-👉 [`/files`](/files)
+ 👉 [`/files`](/files)
 
-Agent 生成的输出文件存放在此，可随时下载。
+ Agent 生成的输出文件存放在此，可随时下载。
 
 ---
 
@@ -457,6 +469,7 @@ Agent 生成的输出文件存放在此，可随时下载。
 | 组件 | 源码 |
 |------|------|
 | cloud-agent-gateway（框架层） | {cag_link} |
+| nanobot-legion（部署层） | {nanobot_legion_link} |
 | nanobot（AI 引擎） | {nanobot_link} |
 
 🧭 点击上方链接浏览完整代码，仓库中的 Dockerfile 可用于部署新空间。
@@ -1145,13 +1158,21 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             async def setup_title():
-                """Ensure a '系统配置' chat exists, is correctly titled, and pinned."""
+                """Ensure a '系统配置' chat exists, is correctly titled, and pinned.
+
+                Refreshes the binding session content on every startup so that
+                additions to BINDING_CHAT_CONTENT (e.g. new agent management
+                links) appear without requiring a full /reset-setup cycle.
+                """
                 nonlocal current_chat_id
                 _log(f"WS setup_title: started (username={username})")
                 try:
                     import time as _time
                     from cloud_agent_gateway.platforms import platform
                     _agent = "default"
+
+                    # Always refresh binding session — updates pinned content if changed
+                    _ensure_binding_session()
                     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
                     # ── Step 0: check for an existing pinned binding chat ──

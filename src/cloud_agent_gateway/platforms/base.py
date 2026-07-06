@@ -506,15 +506,12 @@ def _detect_engine(engine: str) -> bool:
 def _detect_squad() -> bool:
     """Check if Squad Legion overlay is present.
 
-    The authoritative signal is the existence of ``squad_config.json``,
-    which is only deployed on Squad spaces (copied from the platform-specific
-    seed by ``launch.sh`` before ``cloud-gateway-setup`` runs).
-    Cloud Demo spaces have no launch.sh and no squad_config.json.
+    The authoritative signal is the existence of ``squad_config.json``
+    on the persistent volume (written by setup.py when user selects
+    Legion mode, NOT the baked-in template at /app/).
     """
-    # squad_config.json is seeded to /app/squad_config.json by launch.sh
-    # Persistent copy lives at {MOUNT_PATH}/squad_config.json
-    for p in ("/app/squad_config.json",
-              os.path.join(os.environ.get("MOUNT_PATH", "/data"), "squad_config.json")):
+    for p in (os.path.join(os.environ.get("MOUNT_PATH", "/data"), "squad_config.json"),
+              "/mnt/workspace/squad_config.json"):
         if os.path.exists(p):
             return True
     return False
