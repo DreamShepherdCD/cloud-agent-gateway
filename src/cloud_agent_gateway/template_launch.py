@@ -39,6 +39,11 @@ def main() -> None:
                 val = val.strip("'\"")
                 os.environ[name] = val
 
+    # ── Reset check: platform_setup signals oauth.json deleted ──
+    if "RESET_DONE=1" in result.stdout:
+        print("🔄 [Reset] oauth.json deleted — restarting into Phase 1 setup...")
+        sys.exit(0)
+
     # Use DATA_ROOT from platform_setup (Cloud Native source of truth)
     data_root = os.environ.get("DATA_ROOT", "/data")
     print(f"    data_root: {data_root}")

@@ -411,13 +411,13 @@ def _build_source_link(info: dict | None, default_repo: str, default_branch: str
 
 def _build_binding_content() -> str:
     """Build the binding chat markdown with dynamic source links."""
-    cag_info = _get_package_source("cloud-agent-gateway")
-    nanobot_info = _get_package_source("nanobot-ai")
-    nanobot_legion_info = _get_package_source("nanobot-legion")
+    cag_info = get_package_source("cloud-agent-gateway")
+    nanobot_info = get_package_source("nanobot-ai")
+    nanobot_legion_info = get_package_source("nanobot-legion")
 
-    cag_link = _build_source_link(cag_info, "DreamShepherd2006/cloud-agent-gateway")
-    nanobot_link = _build_source_link(nanobot_info, "DreamShepherd2006/nanobot", "nightly")
-    nanobot_legion_link = _build_source_link(nanobot_legion_info, "DreamShepherd2006/nanobot-legion")
+    cag_link = build_source_link(cag_info, "DreamShepherd2006/cloud-agent-gateway")
+    nanobot_link = build_source_link(nanobot_info, "DreamShepherd2006/nanobot", "nightly")
+    nanobot_legion_link = build_source_link(nanobot_legion_info, "DreamShepherd2006/nanobot-legion")
 
     return f"""\
 # 📱 社交通道配置
