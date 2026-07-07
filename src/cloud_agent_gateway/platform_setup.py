@@ -20,9 +20,9 @@ import sys
 # Runs BEFORE any third-party imports so it works even when deps are broken.
 from cloud_agent_gateway.reset_setup import try_reset
 
-_reset_msg = try_reset()
-if _reset_msg:
-    sys.stderr.write(f"[platform_setup] {_reset_msg}\n")
+_reset_done = try_reset() is not None
+if _reset_done:
+    sys.stderr.write("[platform_setup] oauth.json deleted — restart to enter Phase 1 setup\n")
 
 import nanobot_legion  # activate bare-import compat shim before platform detection
 from cloud_agent_gateway.platforms import platform
@@ -61,6 +61,12 @@ def _map_relay_token() -> str | None:
 
 
 def main() -> None:
+    if _reset_done:
+        # Signal callers to exit and restart into Phase 1 setup
+        print("RESET_DONE=1")
+        sys.stderr.write("[platform_setup] done (reset)\n")
+        return
+
     sys.stderr.write(f"[platform_setup] detected: {platform.name}\n")
     sys.stderr.write(f"[platform_setup] data_root: {platform.data_root}\n")
 
