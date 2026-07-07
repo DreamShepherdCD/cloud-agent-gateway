@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Zero-dependency setup reset via ``reset-setup`` flag file.
+Zero-dependency setup reset via ``reset-setup.ini`` flag file.
 
 When a space cannot boot into Phase 1 setup (e.g. leftover oauth.json
-prevents it), edit ``reset-setup`` to ``PURGE_OAUTH=1`` and rebuild.
+prevents it), edit ``reset-setup.ini`` to ``PURGE_OAUTH=1`` and rebuild.
 The marker triggers unconditional oauth.json deletion.
 
 Usage
 ─────
-1. Edit ``reset-setup`` alongside Dockerfile: set ``PURGE_OAUTH=1``.
+1. Edit ``reset-setup.ini`` alongside Dockerfile: set ``PURGE_OAUTH=1``.
 2. Push + rebuild (or Factory Rebuild).
 3. ``platform_setup.py`` deletes oauth.json + sets ``PURGE_OAUTH=0``.
 4. The space restarts into Phase 1 setup.
-5. Edit ``reset-setup`` back to ``PURGE_OAUTH=0`` in the repo so future
+5. Edit ``reset-setup.ini`` back to ``PURGE_OAUTH=0`` so future
    rebuilds don't re-trigger.
 
 Also callable directly:  ``python3 -m cloud_agent_gateway.reset_setup``
@@ -33,8 +33,8 @@ _OAUTH_ROOTS = ("/data", "/mnt/workspace")
 # Where the flag file lives (copied from repo by Dockerfile)
 _FLAG_ROOTS = ("/app", os.getcwd())
 _FLAG_FILE = "reset-setup"
-# Also accept .py suffix (web UI uploads may add it)
-_FLAG_NAMES = (_FLAG_FILE, _FLAG_FILE + ".py")
+# Accept bare name, .ini (standard config), or .py (web UI fallback)
+_FLAG_NAMES = (_FLAG_FILE, _FLAG_FILE + ".ini", _FLAG_FILE + ".py")
 _OAUTH_FILE = "oauth.json"
 
 # ── helpers ──────────────────────────────────────────────────────
