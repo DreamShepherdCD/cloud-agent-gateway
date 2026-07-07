@@ -3,13 +3,13 @@
 Zero-dependency setup reset via ``.reset-setup`` flag file.
 
 When a space cannot boot into Phase 1 setup (e.g. leftover oauth.json
-prevents it), drop a ``.reset-setup`` marker in the persistent volume
-and restart.  The marker triggers unconditional oauth.json deletion.
+prevents it), drop a ``.reset-setup`` marker and restart.  The marker
+triggers unconditional oauth.json deletion.
 
 Usage
 ─────
-1. Upload ``.reset-setup`` to ``/data/`` or ``/mnt/workspace/`` via
-   the platform web UI.
+1. Add ``.reset-setup`` to the space repo (alongside Dockerfile) and push,
+   OR upload it to ``/data/`` or ``/mnt/workspace/`` via the web UI.
 2. Restart the space.
 3. ``platform_setup.py`` (or the CLI below) deletes oauth.json +
    the marker file.
@@ -28,15 +28,27 @@ from __future__ import annotations
 import os
 import sys
 
-_PERSIST_ROOTS = ("/data", "/mnt/workspace")
+# Where oauth.json lives (persistent volume)
+_OAUTH_ROOTS = ("/data", "/mnt/workspace")
+# Where the flag file can be dropped (persistent volume + repo root)
+_FLAG_ROOTS = ("/data", "/mnt/workspace", "/app", os.getcwd())
 _RESET_FLAG = ".reset-setup"
 _OAUTH_FILE = "oauth.json"
 
 
-def _find(path: str) -> str | None:
-    """Return the first matching path across persistence roots."""
-    for root in _PERSIST_ROOTS:
-        full = os.path.join(root, path)
+def _find_flag() -> str | None:
+    """Find .reset-setup marker in any expected location."""
+    for root in _FLAG_ROOTS:
+        full = os.path.join(root, _RESET_FLAG)
+        if os.path.exists(full):
+            return full
+    return None
+
+
+def _find_oauth() -> str | None:
+    """Find oauth.json in persistent volume (HF or MS)."""
+    for root in _OAUTH_ROOTS:
+        full = os.path.join(root, _OAUTH_FILE)
         if os.path.exists(full):
             return full
     return None
@@ -57,13 +69,13 @@ def try_reset() -> str | None:
 
     Returns a message string when reset was performed, None otherwise.
     """
-    flag = _find(_RESET_FLAG)
+    flag = _find_flag()
     if flag is None:
         return None
 
     sys.stderr.write(f"[reset_setup] flag found: {flag}  →  cleaning up\n")
 
-    oauth = _find(_OAUTH_FILE)
+    oauth = _find_oauth()
     if oauth:
         _unlink(oauth)
     _unlink(flag)
