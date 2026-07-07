@@ -31,11 +31,20 @@ import sys
 # Where oauth.json lives (persistent volume)
 _OAUTH_ROOTS = ("/data", "/mnt/workspace")
 # Where the flag file lives (copied from repo by Dockerfile)
-_FLAG_ROOTS = ("/app", os.getcwd())
+_FLAG_ROOTS_STATIC = ("/app",)  # paths known at import time
 _FLAG_FILE = "reset-setup"
 # Accept bare name, .ini (standard config), or .py (web UI fallback)
 _FLAG_NAMES = (_FLAG_FILE, _FLAG_FILE + ".ini", _FLAG_FILE + ".py")
 _OAUTH_FILE = "oauth.json"
+
+
+def _flag_roots() -> tuple[str, ...]:
+    """Roots to search for the flag file (evaluated at runtime)."""
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = "/app"
+    return _FLAG_ROOTS_STATIC + (cwd,)
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -77,11 +86,18 @@ def try_reset() -> str | None:
 
     Returns a message string when reset was performed, None otherwise.
     """
+    roots = _flag_roots()
     for name in _FLAG_NAMES:
-        flag = _find(name, _FLAG_ROOTS)
-        if flag is not None:
-            break
+        for root in roots:
+            full = os.path.join(root, name)
+            if os.path.exists(full):
+                flag = full
+                break
+        else:
+            continue
+        break
     else:
+        sys.stderr.write(f"[reset_setup] not found in {roots} (names: {_FLAG_NAMES})\n")
         return None
 
     content = _read(flag)
