@@ -34,6 +34,9 @@ _PERSIST_ROOTS = ("/data", "/mnt/workspace")
 _RESET_FLAG = ".reset-setup"
 _OAUTH_FILE = "oauth.json"
 
+_sys_stderr = sys.stderr
+_sys_stderr.write("[reset_setup] DEBUG module loaded\n")
+
 
 def _find_root(name: str) -> list[str]:
     """Return paths to *name* across all persistence roots."""
@@ -78,8 +81,11 @@ def try_auto_reset() -> str | None:
 
     Never touches config.json — only oauth.json is deleted.
     """
+    _log("DEBUG scanning...")
     flag_paths = _find_root(_RESET_FLAG)
     oauth_paths = _find_root(_OAUTH_FILE)
+    has_config = _any_config_json()
+    _log(f"DEBUG flags={flag_paths} oauth={oauth_paths} has_config={has_config}")
 
     # ── Manual reset via flag file ──
     if flag_paths:
@@ -92,11 +98,13 @@ def try_auto_reset() -> str | None:
         return "reset_setup: manual reset via .reset-setup flag"
 
     # ── Auto-cleanup: oauth but no config → incomplete install ──
-    if oauth_paths and not _any_config_json():
+    if oauth_paths and not has_config:
+        _log("DEBUG entering auto-cleanup (oauth exists, no config)")
         for op in oauth_paths:
             _unlink(op)
         return "reset_setup: auto-cleanup — oauth.json present but no config.json"
 
+    _log(f"DEBUG skipping (oauth={'yes' if oauth_paths else 'no'} config={'yes' if has_config else 'no'})")
     return None
 
 

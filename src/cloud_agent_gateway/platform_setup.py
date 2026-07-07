@@ -19,7 +19,9 @@ import sys
 # ── Auto-reset: purge stale oauth.json BEFORE any third-party imports ──
 # If oauth.json exists but no config.json → incomplete install → cleanup
 # so the space can re-enter Phase 1 setup instead of crash-looping.
+sys.stderr.write("[platform_setup] DEBUG importing reset_setup...\n")
 from cloud_agent_gateway.reset_setup import try_auto_reset
+sys.stderr.write("[platform_setup] DEBUG calling try_auto_reset()...\n")
 
 _reset_msg = try_auto_reset()
 if _reset_msg:
