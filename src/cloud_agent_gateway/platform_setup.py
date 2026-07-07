@@ -16,6 +16,17 @@ from __future__ import annotations
 import os
 import sys
 
+# ── Auto-reset: purge stale oauth.json BEFORE any third-party imports ──
+# If oauth.json exists but no config.json → incomplete install → cleanup
+# so the space can re-enter Phase 1 setup instead of crash-looping.
+from cloud_agent_gateway.reset_setup import try_auto_reset
+
+_reset_msg = try_auto_reset()
+if _reset_msg:
+    sys.stderr.write(f"[platform_setup] {_reset_msg}\n")
+    # oauth.json is gone — let the process continue; the next step
+    # (template_launch / launch.sh) will detect no oauth → Phase 1 setup.
+
 import nanobot_legion  # activate bare-import compat shim before platform detection
 from cloud_agent_gateway.platforms import platform
 
