@@ -33,6 +33,8 @@ _OAUTH_ROOTS = ("/data", "/mnt/workspace")
 # Where the flag file lives (copied from repo by Dockerfile)
 _FLAG_ROOTS = ("/app", os.getcwd())
 _FLAG_FILE = "reset-setup"
+# Also accept .py suffix (web UI uploads may add it)
+_FLAG_NAMES = (_FLAG_FILE, _FLAG_FILE + ".py")
 _OAUTH_FILE = "oauth.json"
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -75,8 +77,11 @@ def try_reset() -> str | None:
 
     Returns a message string when reset was performed, None otherwise.
     """
-    flag = _find(_FLAG_FILE, _FLAG_ROOTS)
-    if flag is None:
+    for name in _FLAG_NAMES:
+        flag = _find(name, _FLAG_ROOTS)
+        if flag is not None:
+            break
+    else:
         return None
 
     content = _read(flag)
