@@ -50,8 +50,9 @@ def build_source_link(
             display = f"{repo} @{rev}"
             href = f"https://github.com/{repo}/tree/{rev}"
         elif rev and len(rev) >= 7:
-            display = f"{repo} @{rev[:7]}"
-            href = f"https://github.com/{repo}/commit/{commit_short or rev[:7]}"
+            display_rev = rev if len(rev) <= 8 else rev[:7]
+            display = f"{repo} @{display_rev}"
+            href = f"https://github.com/{repo}/commit/{commit_short or display_rev}"
         elif commit_short:
             display = f"{repo} @{commit_short}"
             href = f"https://github.com/{repo}/commit/{commit_short}"
