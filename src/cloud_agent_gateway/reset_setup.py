@@ -32,9 +32,12 @@ import sys
 _OAUTH_ROOTS = ("/data", "/mnt/workspace")
 # Where the flag file lives (copied from repo by Dockerfile)
 _FLAG_ROOTS_STATIC = ("/app",)  # paths known at import time
-_FLAG_FILE = "reset-setup"
-# Accept bare name, .ini (standard config), or .py (web UI fallback)
-_FLAG_NAMES = (_FLAG_FILE, _FLAG_FILE + ".ini", _FLAG_FILE + ".py")
+_FLAG_BASE = "reset-setup"
+# Accept both dash and underscore, with/without .ini/.py suffix
+_FLAG_NAMES = (
+    _FLAG_BASE,          _FLAG_BASE + ".ini",          _FLAG_BASE + ".py",
+    "reset_setup",       "reset_setup.ini",            "reset_setup.py",
+)
 _OAUTH_FILE = "oauth.json"
 
 
@@ -107,6 +110,7 @@ def try_reset() -> str | None:
         if not line.strip().startswith("#")
     )
     if "PURGE_OAUTH=1" not in active:
+        sys.stderr.write(f"[reset_setup] found {flag} but PURGE_OAUTH=1 not set\n")
         return None  # present but not armed
 
     sys.stderr.write(f"[reset_setup] flag armed: {flag}  →  cleaning up\n")
