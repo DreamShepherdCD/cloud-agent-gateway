@@ -3,23 +3,23 @@
 Zero-dependency setup reset via ``reset-setup`` flag file.
 
 When a space cannot boot into Phase 1 setup (e.g. leftover oauth.json
-prevents it), edit the ``reset-setup`` file to contain ``1`` and rebuild.
+prevents it), edit ``reset-setup`` to ``PURGE_OAUTH=1`` and rebuild.
 The marker triggers unconditional oauth.json deletion.
 
 Usage
 ─────
-1. Edit ``reset-setup`` alongside Dockerfile: change content to ``1``.
+1. Edit ``reset-setup`` alongside Dockerfile: set ``PURGE_OAUTH=1``.
 2. Push + rebuild (or Factory Rebuild).
-3. ``platform_setup.py`` deletes oauth.json + resets the flag content.
+3. ``platform_setup.py`` deletes oauth.json + sets ``PURGE_OAUTH=0``.
 4. The space restarts into Phase 1 setup.
-5. Edit ``reset-setup`` back to ``0`` (or empty) in the repo so future
+5. Edit ``reset-setup`` back to ``PURGE_OAUTH=0`` in the repo so future
    rebuilds don't re-trigger.
 
 Also callable directly:  ``python3 -m cloud_agent_gateway.reset_setup``
 
 Safety
 ──────
-- Only triggers when marker content is ``1``.
+- Only triggers when marker contains ``PURGE_OAUTH=1``.
 - Only touches oauth.json — never config.json or any other file.
 """
 
@@ -71,7 +71,7 @@ def _unlink(path: str) -> None:
 
 
 def try_reset() -> str | None:
-    """Check reset-setup flag.  Trigger when file content is ``1``.
+    """Check reset-setup flag.  Trigger when file contains ``PURGE_OAUTH=1``.
 
     Returns a message string when reset was performed, None otherwise.
     """
@@ -80,7 +80,7 @@ def try_reset() -> str | None:
         return None
 
     content = _read(flag)
-    if content != "1":
+    if "PURGE_OAUTH=1" not in content:
         return None  # present but not armed
 
     sys.stderr.write(f"[reset_setup] flag armed: {flag}  →  cleaning up\n")
@@ -89,11 +89,11 @@ def try_reset() -> str | None:
     if oauth:
         _unlink(oauth)
 
-    # Reset flag content to 0 so this rebuild's copy won't re-trigger,
+    # Reset flag so this rebuild's copy won't re-trigger,
     # but repo still has the file for next COPY on future rebuilds.
     try:
         with open(flag, "w") as f:
-            f.write("0\n")
+            f.write("PURGE_OAUTH=0\n")
     except Exception:
         pass
 
