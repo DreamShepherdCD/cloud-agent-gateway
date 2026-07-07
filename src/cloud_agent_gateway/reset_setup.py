@@ -80,7 +80,12 @@ def try_reset() -> str | None:
         return None
 
     content = _read(flag)
-    if "PURGE_OAUTH=1" not in content:
+    # Ignore comments — only active lines count
+    active = "\n".join(
+        line for line in content.splitlines()
+        if not line.strip().startswith("#")
+    )
+    if "PURGE_OAUTH=1" not in active:
         return None  # present but not armed
 
     sys.stderr.write(f"[reset_setup] flag armed: {flag}  →  cleaning up\n")
