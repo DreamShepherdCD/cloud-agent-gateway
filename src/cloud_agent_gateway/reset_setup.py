@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Zero-dependency setup reset via ``.reset-setup`` flag file.
+Zero-dependency setup reset via ``reset-setup`` flag file.
 
 When a space cannot boot into Phase 1 setup (e.g. leftover oauth.json
-prevents it), drop a ``.reset-setup`` marker and restart.  The marker
+prevents it), drop a ``reset-setup`` marker and restart.  The marker
 triggers unconditional oauth.json deletion.
 
 Usage
 ─────
-1. Add ``.reset-setup`` to the space repo (alongside Dockerfile) and push,
+1. Add ``reset-setup`` to the space repo (alongside Dockerfile) and push,
    OR upload it to ``/data/`` or ``/mnt/workspace/`` via the web UI.
 2. Restart the space.
 3. ``platform_setup.py`` (or the CLI below) deletes oauth.json +
@@ -32,12 +32,12 @@ import sys
 _OAUTH_ROOTS = ("/data", "/mnt/workspace")
 # Where the flag file can be dropped (persistent volume + repo root)
 _FLAG_ROOTS = ("/data", "/mnt/workspace", "/app", os.getcwd())
-_RESET_FLAG = ".reset-setup"
+_RESET_FLAG = "reset-setup"
 _OAUTH_FILE = "oauth.json"
 
 
 def _find_flag() -> str | None:
-    """Find .reset-setup marker in any expected location."""
+    """Find reset-setup marker in any expected location."""
     for root in _FLAG_ROOTS:
         full = os.path.join(root, _RESET_FLAG)
         if os.path.exists(full):
@@ -65,7 +65,7 @@ def _unlink(path: str) -> None:
 
 
 def try_reset() -> str | None:
-    """Check for .reset-setup flag and delete oauth.json if found.
+    """Check for reset-setup flag and delete oauth.json if found.
 
     Returns a message string when reset was performed, None otherwise.
     """
@@ -90,5 +90,5 @@ if __name__ == "__main__":
     if result:
         sys.stderr.write(f"[reset_setup] ✅ {result}\n")
     else:
-        sys.stderr.write("[reset_setup] no .reset-setup flag found — nothing to do\n")
+        sys.stderr.write("[reset_setup] no reset-setup flag found — nothing to do\n")
         sys.exit(1)
