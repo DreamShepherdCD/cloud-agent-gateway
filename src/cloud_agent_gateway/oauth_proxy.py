@@ -47,6 +47,7 @@ if _cloud_dir not in sys.path:
 
 from cloud_agent_gateway.platforms import platform as _platform
 from cloud_agent_gateway.channel_binding import bind_status, discover
+from cloud_agent_gateway.package_source import get_package_source, build_source_link
 from cloud_agent_gateway import file_manager
 
 # Discover channel bindings at module load (triggers import of deploy-layer modules)
@@ -351,64 +352,6 @@ _rows = "\n".join(
     f"| {b.icon} {b.display} | [绑定{b.display}](/bind/{b.name}) |"
     for b in _bindings
 )
-def _get_package_source(pkg_name: str) -> dict | None:
-    """Read pip direct_url.json for git-installed package → {repo, revision, commit, url}."""
-    try:
-        from importlib.metadata import distribution, PackageNotFoundError
-        dist = distribution(pkg_name)
-    except Exception:
-        return None
-    direct_url = dist._path / "direct_url.json"
-    if not direct_url.is_file():
-        return None
-    try:
-        import json
-        info = json.loads(direct_url.read_text())
-    except Exception:
-        return None
-    url = info.get("url", "")
-    repo = ""
-    if "github.com/" in url:
-        repo = url.split("github.com/")[-1].replace(".git", "")
-    revision = ""
-    commit = ""
-    vcs = info.get("vcs_info", {})
-    if isinstance(vcs, dict):
-        revision = vcs.get("requested_revision", "")
-        commit = vcs.get("commit_id", "")
-    return {"repo": repo, "revision": revision, "commit": commit, "url": url}
-
-
-def _build_source_link(info: dict | None, default_repo: str, default_branch: str = "") -> str:
-    """Build a GitHub markdown link from package source info, with fallback."""
-    if info and info.get("repo"):
-        repo = info["repo"]
-        rev = info.get("revision", "")
-        commit_short = info.get("commit", "")[:7] if info.get("commit") else ""
-
-        if rev.startswith("v"):
-            display = f"{repo} @{rev}"
-            href = f"https://github.com/{repo}/tree/{rev}"
-        elif rev and len(rev) >= 7:
-            display = f"{repo} @{rev[:7]}"
-            href = f"https://github.com/{repo}/commit/{commit_short or rev[:7]}"
-        elif commit_short:
-            display = f"{repo} @{commit_short}"
-            href = f"https://github.com/{repo}/commit/{commit_short}"
-        else:
-            display = repo
-            href = f"https://github.com/{repo}"
-    else:
-        repo = default_repo
-        display = repo
-        if default_branch:
-            href = f"https://github.com/{repo}/tree/{default_branch}"
-        else:
-            href = f"https://github.com/{repo}"
-
-    return f"[{display}]({href})"
-
-
 def _build_binding_content() -> str:
     """Build the binding chat markdown with dynamic source links."""
     cag_info = get_package_source("cloud-agent-gateway")
