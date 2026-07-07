@@ -40,7 +40,9 @@ def _find_flag() -> str | None:
     """Find reset-setup marker in any expected location."""
     for root in _FLAG_ROOTS:
         full = os.path.join(root, _RESET_FLAG)
-        if os.path.exists(full):
+        exists = os.path.exists(full)
+        sys.stderr.write(f"[reset_setup] check {full} → {exists}\n")
+        if exists:
             return full
     return None
 
