@@ -3,24 +3,24 @@
 Zero-dependency setup reset via ``reset-setup`` flag file.
 
 When a space cannot boot into Phase 1 setup (e.g. leftover oauth.json
-prevents it), drop a ``reset-setup`` marker and restart.  The marker
-triggers unconditional oauth.json deletion.
+prevents it), edit the ``reset-setup`` file to contain ``1`` and rebuild.
+The marker triggers unconditional oauth.json deletion.
 
 Usage
 ─────
-1. Add ``reset-setup`` to the space repo (alongside Dockerfile) and push,
-   OR upload it to ``/data/`` or ``/mnt/workspace/`` via the web UI.
-2. Restart the space.
-3. ``platform_setup.py`` (or the CLI below) deletes oauth.json +
-   the marker file.
+1. Edit ``reset-setup`` alongside Dockerfile: change content to ``1``.
+2. Push + rebuild (or Factory Rebuild).
+3. ``platform_setup.py`` deletes oauth.json + resets the flag content.
 4. The space restarts into Phase 1 setup.
+5. Edit ``reset-setup`` back to ``0`` (or empty) in the repo so future
+   rebuilds don't re-trigger.
 
 Also callable directly:  ``python3 -m cloud_agent_gateway.reset_setup``
 
 Safety
 ──────
+- Only triggers when marker content is ``1``.
 - Only touches oauth.json — never config.json or any other file.
-- Only triggers when the marker file exists (explicit user intent).
 """
 
 from __future__ import annotations
@@ -30,30 +30,31 @@ import sys
 
 # Where oauth.json lives (persistent volume)
 _OAUTH_ROOTS = ("/data", "/mnt/workspace")
-# Where the flag file can be dropped (persistent volume + repo root)
-_FLAG_ROOTS = ("/data", "/mnt/workspace", "/app", os.getcwd())
-_RESET_FLAG = "reset-setup"
+# Where the flag file lives (copied from repo by Dockerfile)
+_FLAG_ROOTS = ("/app", os.getcwd())
+_FLAG_FILE = "reset-setup"
 _OAUTH_FILE = "oauth.json"
 
-
-def _find_flag() -> str | None:
-    """Find reset-setup marker in any expected location."""
-    for root in _FLAG_ROOTS:
-        full = os.path.join(root, _RESET_FLAG)
-        exists = os.path.exists(full)
-        sys.stderr.write(f"[reset_setup] check {full} → {exists}\n")
-        if exists:
-            return full
-    return None
+# ── helpers ──────────────────────────────────────────────────────
 
 
-def _find_oauth() -> str | None:
-    """Find oauth.json in persistent volume (HF or MS)."""
-    for root in _OAUTH_ROOTS:
-        full = os.path.join(root, _OAUTH_FILE)
+def _find(path: str | None, roots: tuple[str, ...]) -> str | None:
+    for root in roots:
+        if path is None:
+            full = root
+        else:
+            full = os.path.join(root, path)
         if os.path.exists(full):
             return full
     return None
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
 
 
 def _unlink(path: str) -> None:
@@ -66,21 +67,35 @@ def _unlink(path: str) -> None:
         sys.stderr.write(f"[reset_setup] FAILED to delete {path}: {exc}\n")
 
 
+# ── main logic ───────────────────────────────────────────────────
+
+
 def try_reset() -> str | None:
-    """Check for reset-setup flag and delete oauth.json if found.
+    """Check reset-setup flag.  Trigger when file content is ``1``.
 
     Returns a message string when reset was performed, None otherwise.
     """
-    flag = _find_flag()
+    flag = _find(_FLAG_FILE, _FLAG_ROOTS)
     if flag is None:
         return None
 
-    sys.stderr.write(f"[reset_setup] flag found: {flag}  →  cleaning up\n")
+    content = _read(flag)
+    if content != "1":
+        return None  # present but not armed
 
-    oauth = _find_oauth()
+    sys.stderr.write(f"[reset_setup] flag armed: {flag}  →  cleaning up\n")
+
+    oauth = _find(_OAUTH_FILE, _OAUTH_ROOTS)
     if oauth:
         _unlink(oauth)
-    _unlink(flag)
+
+    # Reset flag content to 0 so this rebuild's copy won't re-trigger,
+    # but repo still has the file for next COPY on future rebuilds.
+    try:
+        with open(flag, "w") as f:
+            f.write("0\n")
+    except Exception:
+        pass
 
     return "oauth.json deleted — restart to enter Phase 1 setup"
 
@@ -92,5 +107,5 @@ if __name__ == "__main__":
     if result:
         sys.stderr.write(f"[reset_setup] ✅ {result}\n")
     else:
-        sys.stderr.write("[reset_setup] no reset-setup flag found — nothing to do\n")
+        sys.stderr.write("[reset_setup] not armed — nothing to do\n")
         sys.exit(1)
