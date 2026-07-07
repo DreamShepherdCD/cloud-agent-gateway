@@ -130,7 +130,7 @@ def _build_squad_peers() -> dict:
     Additional worker agents are added later via /config/agents.
     """
     return {
-        "neo": {"id": "squad:commander", "gateway_port": 18790, "ws_port": 18888},
+        "neo": {"id": "squad:commander", "gateway_port": 18790, "ws_port": 18791},
     }
 
 
