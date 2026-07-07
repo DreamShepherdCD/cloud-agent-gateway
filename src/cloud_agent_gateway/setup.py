@@ -125,20 +125,12 @@ def _is_hf_space() -> bool:
 # ── config builder ───────────────────────────────────────────────────
 
 def _build_squad_peers() -> dict:
-    """Return standard 5-agent peer definitions for Legion mode.
+    """Return initial peer definition for Legion mode — only neo (Commander).
 
-    Port scheme:
-      gateway_port: 18790 + n  (HTTP gateway)
-      ws_port:      18888 + n  (WebSocket channel)
-
-    These must match the ports squad_config_sync writes to agent configs.
+    Additional worker agents are added later via /config/agents.
     """
     return {
-        "neo":      {"id": "squad:commander", "gateway_port": 18790, "ws_port": 18888},
-        "trinity":  {"id": "squad:trinity",    "gateway_port": 18791, "ws_port": 18891},
-        "sentinel": {"id": "squad:sentinel",   "gateway_port": 18792, "ws_port": 18892},
-        "assistant":{"id": "squad:assistant",  "gateway_port": 18793, "ws_port": 18893},
-        "medic":    {"id": "squad:medic",      "gateway_port": 18794, "ws_port": 18894},
+        "neo": {"id": "squad:commander", "gateway_port": 18790, "ws_port": 18791},
     }
 
 
