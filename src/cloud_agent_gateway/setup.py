@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from typing import Any
 
@@ -643,6 +644,9 @@ async def post_setup(request: Request) -> JSONResponse:
         if deploy_mode == "legion":
             squad_config, neo_config, oauth_cfg = _build_legion_config(form)
 
+            # Migrate old agent instances from legacy path first
+            _migrate_legacy_instances(DATA_ROOT)
+
             # Write squad_config.json
             squad_path = os.path.join(DATA_ROOT, "legion", "squad_config.json")
             os.makedirs(os.path.dirname(squad_path), exist_ok=True)
@@ -650,7 +654,7 @@ async def post_setup(request: Request) -> JSONResponse:
                 json.dump(squad_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ squad_config.json 已写入: {json.dumps(list(squad_config.keys()))}", flush=True)
 
-            # Write neo's config.json
+            # Write neo's config.json (overwrites if migration brought an old one)
             neo_cfg_path = os.path.join(DATA_ROOT, "legion", "instances", "neo", "config.json")
             os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
             with open(neo_cfg_path, "w", encoding="utf-8") as f:
@@ -712,5 +716,40 @@ def main() -> None:
     uvicorn.run(app, host="0.0.0.0", port=7860, log_level="warning")
 
 
+def _migrate_legacy_instances(data_root: str) -> None:
+    """Copy old agent instances from DATA_ROOT/instances/ to DATA_ROOT/legion/instances/.
+
+    Skips 'default' (single-agent), '_template', and 'logs'.
+    Only copies agent dirs that don't already exist in the legion target.
+    """
+    legacy_instances = os.path.join(data_root, "instances")
+    legion_instances = os.path.join(data_root, "legion", "instances")
+
+    if not os.path.isdir(legacy_instances):
+        return
+
+    os.makedirs(legion_instances, exist_ok=True)
+
+    skip = {"default", "_template", "logs"}
+    migrated = 0
+
+    for name in sorted(os.listdir(legacy_instances)):
+        if name in skip:
+            continue
+        src = os.path.join(legacy_instances, name)
+        dst = os.path.join(legion_instances, name)
+        if not os.path.isdir(src):
+            continue
+        if os.path.exists(dst):
+            continue  # already in legion, skip
+        shutil.copytree(src, dst)
+        print(f"[setup] 🔄 迁移旧 agent: {name} → legion/instances/{name}", flush=True)
+        migrated += 1
+
+    if migrated:
+        print(f"[setup] ✅ 已迁移 {migrated} 个旧 agent 到 legion/", flush=True)
+
+
 if __name__ == "__main__":
     main()
+
