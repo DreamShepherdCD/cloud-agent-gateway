@@ -259,6 +259,156 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
     return squad_config, neo_config, oauth_cfg
 
 
+LEGION_BACKUP_DIR = "legion_backup"
+
+
+def _has_legion_backup(data_root: str) -> bool:
+    """Check if a legion backup exists."""
+    backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+    return os.path.isfile(os.path.join(backup_dir, "squad_config.json"))
+
+
+def _backup_legion_config(data_root: str) -> None:
+    """Backup current legion config before switching to single-agent mode."""
+    legion_dir = os.path.join(data_root, "legion")
+    backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+
+    squad_path = os.path.join(legion_dir, "squad_config.json")
+    if not os.path.isfile(squad_path):
+        return
+
+    # Clean old backup
+    if os.path.exists(backup_dir):
+        shutil.rmtree(backup_dir)
+    os.makedirs(backup_dir)
+
+    # Copy squad_config.json
+    shutil.copy2(squad_path, os.path.join(backup_dir, "squad_config.json"))
+
+    # Copy each agent's config.json + channels/*/account.json
+    instances_dir = os.path.join(legion_dir, "instances")
+    if os.path.isdir(instances_dir):
+        try:
+            with open(squad_path) as f:
+                squad_cfg = json.load(f)
+            peers = squad_cfg.get("peers", {})
+        except Exception:
+            peers = {}
+
+        for agent_name in os.listdir(instances_dir):
+            src_agent = os.path.join(instances_dir, agent_name)
+            if not os.path.isdir(src_agent):
+                continue
+            # Only backup agents in the roster
+            if agent_name not in peers:
+                continue
+
+            dst_agent = os.path.join(backup_dir, "instances", agent_name)
+
+            # config.json
+            cfg_path = os.path.join(src_agent, "config.json")
+            if os.path.isfile(cfg_path):
+                os.makedirs(os.path.dirname(os.path.join(dst_agent, "config.json")), exist_ok=True)
+                shutil.copy2(cfg_path, os.path.join(dst_agent, "config.json"))
+
+            # channels/*/account.json
+            channels_dir = os.path.join(src_agent, "channels")
+            if os.path.isdir(channels_dir):
+                for ch_name in os.listdir(channels_dir):
+                    acct_path = os.path.join(channels_dir, ch_name, "account.json")
+                    if os.path.isfile(acct_path):
+                        os.makedirs(os.path.join(dst_agent, "channels", ch_name), exist_ok=True)
+                        shutil.copy2(acct_path, os.path.join(dst_agent, "channels", ch_name, "account.json"))
+
+    print(f"[setup] 📦 已备份 Legion 配置到 {LEGION_BACKUP_DIR}/ ({len(peers)} agents)", flush=True)
+
+
+def _update_neo_config(data_root: str, form: dict) -> None:
+    """Update neo's config.json with form's provider/model/api_key."""
+    provider_key = form["provider"]
+    spec = _provider_for_form(provider_key)
+    api_base = form.get("api_base", "").strip()
+    if not api_base and spec is not None and getattr(spec, "default_api_base", ""):
+        api_base = spec.default_api_base
+
+    models_data = _PROVIDER_MODELS.get(provider_key, {})
+    model = form.get("model", "").strip() or models_data.get("default", "")
+    api_key = form.get("api_key", "").strip()
+
+    neo_cfg_path = os.path.join(data_root, "legion", "instances", "neo", "config.json")
+    if os.path.isfile(neo_cfg_path):
+        with open(neo_cfg_path) as f:
+            neo_cfg = json.load(f)
+    else:
+        neo_cfg = {}
+
+    neo_cfg.setdefault("agents", {}).setdefault("defaults", {})["model"] = model
+    neo_cfg["agents"]["defaults"]["provider"] = provider_key
+    neo_cfg.setdefault("providers", {})[provider_key] = {
+        "api_key": api_key,
+        "api_base": api_base,
+    }
+
+    os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
+    with open(neo_cfg_path, "w", encoding="utf-8") as f:
+        json.dump(neo_cfg, f, indent=2, ensure_ascii=False)
+    print(f"[setup] 🔄 已更新 neo config.json (provider={provider_key})", flush=True)
+
+
+def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict]:
+    """Restore legion config from backup, or create fresh if no backup exists.
+
+    Returns (squad_config, neo_config, oauth_cfg).
+    neo_config is empty dict when restored from backup (neo already written).
+    """
+    fresh_start = form.get("fresh_start", "false") == "true"
+
+    if not fresh_start and _has_legion_backup(data_root):
+        backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+
+        # Load backup squad_config.json
+        with open(os.path.join(backup_dir, "squad_config.json")) as f:
+            squad_config = json.load(f)
+
+        # Update data_root and dlq_dir for current platform
+        old_data_root = squad_config.get("data_root", "")
+        squad_config["data_root"] = data_root
+        if "dlq_dir" in squad_config and old_data_root:
+            squad_config["dlq_dir"] = squad_config["dlq_dir"].replace(old_data_root, data_root)
+
+        # Restore agent configs from backup
+        legion_instances = os.path.join(data_root, "legion", "instances")
+        backup_instances = os.path.join(backup_dir, "instances")
+        if os.path.isdir(backup_instances):
+            for agent_name in os.listdir(backup_instances):
+                src = os.path.join(backup_instances, agent_name)
+                dst = os.path.join(legion_instances, agent_name)
+                if os.path.isdir(src):
+                    if os.path.exists(dst):
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst)
+
+        # Update neo's config with new provider/model/api_key from form
+        _update_neo_config(data_root, form)
+
+        oauth_cfg = _build_oauth(form)
+        print(f"[setup] 🔄 从备份恢复 Legion 配置 (agents: {list(squad_config.get('peers', {}).keys())})", flush=True)
+        return squad_config, {}, oauth_cfg
+
+    # Fresh start: clear old backup if any
+    if fresh_start:
+        backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir)
+            print(f"[setup] 🧹 已清除旧备份", flush=True)
+
+    # Create fresh legion config (only neo)
+    squad_config, neo_config, oauth_cfg = _build_legion_config(form)
+    _migrate_legacy_instances(data_root)
+    print(f"[setup] ✨ 全新 Legion 配置 (仅 neo)", flush=True)
+    return squad_config, neo_config, oauth_cfg
+
+
 def _build_provider_form_data() -> tuple[str, str, str]:
     """Generate dynamic HTML/JS provider data from nanobot official registry.
 
@@ -362,11 +512,15 @@ SETUP_HTML = """\
         </label>
       </div>
 
-      <div id="legion-fields" class="hidden">
+       <div id="legion-fields" class="hidden">
         <label for="commander_user">管理员用户名</label>
         <input id="commander_user" name="commander_user" type="text"
                placeholder="你的 OAuth 登录用户名">
         <p class="tip">此用户拥有最高权限，可以管理所有 Agent。</p>
+        <label id="fresh-start-label" style="margin-top:10px;display:none">
+          <input type="checkbox" name="fresh_start" value="true" id="fresh_start" style="width:auto">
+          <span style="font-weight:normal">全新开始（忽略已有配置）</span>
+        </label>
       </div>
 
       <label for="provider">服务商</label>
@@ -508,6 +662,12 @@ if (HF_OAUTH_AUTO) {
   document.getElementById('oauth-auto-note').style.display = '';
 }
 
+// 检测已有 Legion 备份 → 多用户模式下显示"全新开始"复选框
+var LEGION_BACKUP_EXISTS = {LEGION_BACKUP_EXISTS};
+if (LEGION_BACKUP_EXISTS) {
+  document.getElementById('fresh-start-label').style.display = '';
+}
+
 // 平台检测：有 ms.show 域名 → ModelScope，否则 HuggingFace
 document.getElementById('oauth-link-ms').style.display = isMS ? '' : 'none';
 document.getElementById('oauth-link-hf').style.display = isMS ? 'none' : '';
@@ -617,12 +777,17 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
 
     # Generate dynamic provider data from nanobot official registry
     provider_opts, presets_js, key_urls_js = _build_provider_form_data()
+
+    # Detect legion backup for "fresh start" checkbox visibility
+    has_legion_backup = _has_legion_backup(DATA_ROOT)
+
     html = (SETUP_HTML
             .replace("{PROVIDER_OPTIONS}", provider_opts)
             .replace("{PROVIDER_PRESETS_JS}", presets_js)
             .replace("{PROVIDER_KEY_URLS_JS}", key_urls_js)
             .replace("{PREFILL_JS}", prefill_js)
-            .replace("{HF_OAUTH_AUTO}", hf_oauth_auto))
+            .replace("{HF_OAUTH_AUTO}", hf_oauth_auto)
+            .replace("{LEGION_BACKUP_EXISTS}", "true" if has_legion_backup else "false"))
     return HTMLResponse(html)
 
 
@@ -642,10 +807,7 @@ async def post_setup(request: Request) -> JSONResponse:
 
     try:
         if deploy_mode == "legion":
-            squad_config, neo_config, oauth_cfg = _build_legion_config(form)
-
-            # Migrate old agent instances from legacy path first
-            _migrate_legacy_instances(DATA_ROOT)
+            squad_config, neo_config, oauth_cfg = _restore_legion_config(DATA_ROOT, form)
 
             # Write squad_config.json
             squad_path = os.path.join(DATA_ROOT, "legion", "squad_config.json")
@@ -654,14 +816,18 @@ async def post_setup(request: Request) -> JSONResponse:
                 json.dump(squad_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ squad_config.json 已写入: {json.dumps(list(squad_config.keys()))}", flush=True)
 
-            # Write neo's config.json (overwrites if migration brought an old one)
-            neo_cfg_path = os.path.join(DATA_ROOT, "legion", "instances", "neo", "config.json")
-            os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
-            with open(neo_cfg_path, "w", encoding="utf-8") as f:
-                json.dump(neo_config, f, indent=2, ensure_ascii=False)
-            print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
+            # Write neo's config.json only for fresh start (restore already wrote it)
+            if neo_config:
+                neo_cfg_path = os.path.join(DATA_ROOT, "legion", "instances", "neo", "config.json")
+                os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
+                with open(neo_cfg_path, "w", encoding="utf-8") as f:
+                    json.dump(neo_config, f, indent=2, ensure_ascii=False)
+                print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
         else:
-            # 清理旧 Legion 残留（从多用户模式切换到单用户模式）
+            # 备份 Legion 配置（从多用户模式切换到单用户模式）
+            _backup_legion_config(DATA_ROOT)
+
+            # 清理旧 Legion 残留
             for legacy in [
                 os.path.join(DATA_ROOT, "squad_config.json"),
                 os.path.join(DATA_ROOT, "legion", "squad_config.json"),
