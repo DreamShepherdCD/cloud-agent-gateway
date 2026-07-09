@@ -388,6 +388,16 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
                         shutil.rmtree(dst)
                     shutil.copytree(src, dst)
 
+                    # Clean up stale .removed.* directories for this agent
+                    # (they were archived before backup — now restored, remove archived copies)
+                    removed_prefix = agent_name + ".removed."
+                    for entry in os.listdir(legion_instances):
+                        if entry.startswith(removed_prefix):
+                            rm_path = os.path.join(legion_instances, entry)
+                            if os.path.isdir(rm_path):
+                                shutil.rmtree(rm_path)
+                                print(f"[setup] 🧹 已清理已归档副本: {entry}", flush=True)
+
         # Update neo's config with new provider/model/api_key from form
         _update_neo_config(data_root, form)
 
