@@ -644,23 +644,27 @@ async def post_setup(request: Request) -> JSONResponse:
             squad_config, neo_config, oauth_cfg = _build_legion_config(form)
 
             # Write squad_config.json
-            squad_path = os.path.join(DATA_ROOT, "squad_config.json")
+            squad_path = os.path.join(DATA_ROOT, "legion", "squad_config.json")
+            os.makedirs(os.path.dirname(squad_path), exist_ok=True)
             with open(squad_path, "w", encoding="utf-8") as f:
                 json.dump(squad_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ squad_config.json 已写入: {json.dumps(list(squad_config.keys()))}", flush=True)
 
             # Write neo's config.json
-            neo_cfg_path = os.path.join(DATA_ROOT, "instances", "neo", "config.json")
+            neo_cfg_path = os.path.join(DATA_ROOT, "legion", "instances", "neo", "config.json")
             os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
             with open(neo_cfg_path, "w", encoding="utf-8") as f:
                 json.dump(neo_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
         else:
             # 清理旧 Legion 残留（从多用户模式切换到单用户模式）
-            legacy_squad = os.path.join(DATA_ROOT, "squad_config.json")
-            if os.path.exists(legacy_squad):
-                os.remove(legacy_squad)
-                print("[setup] 🧹 已清理旧的 squad_config.json（切换到单用户模式）", flush=True)
+            for legacy in [
+                os.path.join(DATA_ROOT, "squad_config.json"),
+                os.path.join(DATA_ROOT, "legion", "squad_config.json"),
+            ]:
+                if os.path.exists(legacy):
+                    os.remove(legacy)
+                    print(f"[setup] 🧹 已清理旧的 squad_config.json ({legacy})", flush=True)
 
             config, oauth_cfg = _build_config(form)
             os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
