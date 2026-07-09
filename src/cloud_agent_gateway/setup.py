@@ -730,7 +730,8 @@ def _migrate_legacy_instances(data_root: str) -> None:
 
     os.makedirs(legion_instances, exist_ok=True)
 
-    skip = {"default", "_template", "logs"}
+    # Only migrate dirs that look like nanobot agent instances (contain config.json)
+    skip = {"default", "_template", "logs", ".git"}
     migrated = 0
 
     for name in sorted(os.listdir(legacy_instances)):
@@ -740,6 +741,8 @@ def _migrate_legacy_instances(data_root: str) -> None:
         dst = os.path.join(legion_instances, name)
         if not os.path.isdir(src):
             continue
+        if not os.path.isfile(os.path.join(src, "config.json")):
+            continue  # not an agent instance, skip
         if os.path.exists(dst):
             continue  # already in legion, skip
         shutil.copytree(src, dst)
