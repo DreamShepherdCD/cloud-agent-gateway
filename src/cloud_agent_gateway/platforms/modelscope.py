@@ -22,6 +22,7 @@ import httpx
 from authlib.integrations.starlette_client import OAuth
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 logger = logging.getLogger("cloud.modelscope")
 
@@ -40,10 +41,11 @@ def _get_oauth_client() -> OAuth:
     discovery causes nonce-validation failures on ModelScope.
     """
     oauth = OAuth()
+    client_id, client_secret = read_oauth_json()
     oauth.register(
         name="modelscope",
-        client_id=os.environ.get("OAUTH_CLIENT_ID", ""),
-        client_secret=os.environ.get("OAUTH_CLIENT_SECRET", ""),
+        client_id=client_id,
+        client_secret=client_secret,
         server_metadata_url=_MODELSCOPE_OIDC_CONFIG,
         client_kwargs={
             "scope": "profile",  # avoid 'openid' → no nonce
@@ -407,8 +409,7 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, CloudPlatformProtocol):
         if not code:
             return None
 
-        client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+        client_id, client_secret = read_oauth_json()
         redirect_uri = str(request.url).split("?")[0]
 
         async with httpx.AsyncClient(timeout=15) as http:

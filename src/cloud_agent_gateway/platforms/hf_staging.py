@@ -24,7 +24,8 @@ from starlette.config import Config as StarletteConfig
 from starlette.middleware.base import BaseHTTPMiddleware
 from authlib.integrations.starlette_client import OAuth
 
-from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
+from cloud_agent_gateway.platforms.base import CloudPlatformProtocol
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 # ── Local logging (mirrors gatekeeper for now — will deduplicate later) ──
 def _log(msg: str) -> None:
@@ -95,8 +96,7 @@ class HFStagingPlatform(PlatformProtocol):
     def register_oauth(self) -> OAuth:
         starlette_config = StarletteConfig(environ=os.environ)
         self._oauth = OAuth(starlette_config)
-        cid = os.environ.get("OAUTH_CLIENT_ID", "MISSING")
-        cs = os.environ.get("OAUTH_CLIENT_SECRET")
+        cid, cs = read_oauth_json()
         _log(f"🔑 OAuth CLIENT_ID prefix: {cid[:4]}... (len={len(cid)}), SECRET={'SET' if cs else 'MISSING'}")
         try:
             self._oauth.register(
@@ -134,8 +134,7 @@ class HFStagingPlatform(PlatformProtocol):
             _log("⚠️ No authorisation code in callback")
             return None
 
-        client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+        client_id, client_secret = read_oauth_json()
         redirect_uri = str(request.url_for("auth")).replace("http://", "https://")
 
         async with httpx.AsyncClient(timeout=15) as http:
@@ -274,7 +273,7 @@ class HFStagingPlatform(PlatformProtocol):
         async def login(request: Request):
             request.session.clear()
             redirect_uri = str(request.url_for("auth")).replace("http://", "https://")
-            client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+            client_id, _ = read_oauth_json()
             state = secrets.token_urlsafe(32)
             request.session["oauth_state"] = state
             auth_url = (

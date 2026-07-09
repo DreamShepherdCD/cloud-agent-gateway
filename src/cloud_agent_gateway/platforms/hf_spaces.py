@@ -19,6 +19,7 @@ import httpx
 from authlib.integrations.starlette_client import OAuth
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 
 def _log(msg: str) -> None:
@@ -49,8 +50,7 @@ class HFSpacesPlatform(CloudPlatformProtocol):
 
     def register_oauth(self) -> Any:
         oauth = OAuth()
-        cid = os.environ.get("OAUTH_CLIENT_ID", "")
-        cs = os.environ.get("OAUTH_CLIENT_SECRET")
+        cid, cs = read_oauth_json()
         _log(f"OAuth CLIENT_ID: {cid[:8]}...  SECRET={'SET' if cs else 'MISSING'}")
         try:
             oauth.register(
@@ -75,8 +75,7 @@ class HFSpacesPlatform(CloudPlatformProtocol):
             _log("No authorisation code in callback")
             return None
 
-        client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+        client_id, client_secret = read_oauth_json()
         # Build redirect_uri from the callback URL (request itself, minus query string)
         redirect_uri = str(request.url).split("?")[0].replace("http://", "https://")
 

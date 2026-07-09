@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 logger = logging.getLogger("gatekeeper.modelscope")
 
@@ -40,10 +41,11 @@ def _get_oauth_client() -> OAuth:
     discovery causes nonce-validation failures on ModelScope.
     """
     oauth = OAuth()
+    client_id, client_secret = read_oauth_json()
     oauth.register(
         name="modelscope",
-        client_id=os.environ.get("OAUTH_CLIENT_ID", ""),
-        client_secret=os.environ.get("OAUTH_CLIENT_SECRET", ""),
+        client_id=client_id,
+        client_secret=client_secret,
         server_metadata_url=_MODELSCOPE_OIDC_CONFIG,
         client_kwargs={
             "scope": "profile",  # avoid 'openid' → no nonce
@@ -191,8 +193,7 @@ class ModelScopePlatform(PlatformProtocol):
             logger.warning("No authorisation code in callback")
             return None
 
-        client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+        client_id, client_secret = read_oauth_json()
         redirect_uri = self._public_callback_url(request)
 
         async with httpx.AsyncClient(timeout=15) as client:
@@ -377,7 +378,7 @@ class ModelScopePlatform(PlatformProtocol):
         async def modelscope_login(request: Request):
             _ensure_webui()
             redirect_uri = platform._public_callback_url(request)
-            client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+            client_id, _ = read_oauth_json()
             auth_url = (
                 f"https://modelscope.cn/oauth/authorize"
                 f"?response_type=code"
