@@ -24,7 +24,7 @@ from starlette.config import Config as StarletteConfig
 from starlette.middleware.base import BaseHTTPMiddleware
 from authlib.integrations.starlette_client import OAuth
 
-from cloud_agent_gateway.platforms.base import CloudPlatformProtocol
+from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
 from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 # ── Local logging (mirrors gatekeeper for now — will deduplicate later) ──
