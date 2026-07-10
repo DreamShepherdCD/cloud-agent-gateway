@@ -46,6 +46,7 @@ if _cloud_dir not in sys.path:
     sys.path.insert(0, _cloud_dir)
 
 from cloud_agent_gateway.platforms import platform as _platform
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 from cloud_agent_gateway.channel_binding import bind_status, discover
 from cloud_agent_gateway.package_source import get_package_source, build_source_link
 from cloud_agent_gateway import file_manager
@@ -336,7 +337,7 @@ async def login_start(request: Request) -> RedirectResponse:
 
     params = {
         "response_type": "code",
-        "client_id": os.environ.get("OAUTH_CLIENT_ID", ""),
+        "client_id": read_oauth_json()[0],
         "redirect_uri": redirect_uri,
         "scope": scope,
         "state": state,

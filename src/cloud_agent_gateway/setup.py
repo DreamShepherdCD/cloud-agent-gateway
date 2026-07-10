@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from typing import Any
 
@@ -258,6 +259,149 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
     return squad_config, neo_config, oauth_cfg
 
 
+LEGION_BACKUP_DIR = "legion_backup"
+
+
+def _has_legion_backup(data_root: str) -> bool:
+    """Check if a legion backup exists."""
+    backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+    return os.path.isfile(os.path.join(backup_dir, "squad_config.json"))
+
+
+def _backup_legion_config(data_root: str) -> None:
+    """Backup squad_config.json before switching to single-agent mode.
+
+    Single and multi-agent modes use separate workspace directories, so
+    agent instance data (configs, channels, sessions, etc.) is never
+    touched during mode switch.  Only squad_config.json needs to be
+    saved so the previous multi-agent roster can be restored later.
+    """
+    legion_dir = os.path.join(data_root, "legion")
+    backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+
+    squad_path = os.path.join(legion_dir, "squad_config.json")
+    if not os.path.isfile(squad_path):
+        return
+
+    # Clean old backup
+    if os.path.exists(backup_dir):
+        shutil.rmtree(backup_dir)
+    os.makedirs(backup_dir)
+
+    # Only squad_config.json is needed — instance data stays in place
+    shutil.copy2(squad_path, os.path.join(backup_dir, "squad_config.json"))
+
+    try:
+        with open(squad_path) as f:
+            squad_cfg = json.load(f)
+        peers = squad_cfg.get("peers", {})
+    except Exception:
+        peers = {}
+
+    print(f"[setup] 📦 已备份 squad_config.json 到 {LEGION_BACKUP_DIR}/ ({len(peers)} agents)", flush=True)
+
+
+def _update_neo_config(data_root: str, form: dict) -> None:
+    """Update neo's config.json with form's provider/model/api_key."""
+    provider_key = form["provider"]
+    spec = _provider_for_form(provider_key)
+    api_base = form.get("api_base", "").strip()
+    if not api_base and spec is not None and getattr(spec, "default_api_base", ""):
+        api_base = spec.default_api_base
+
+    models_data = _PROVIDER_MODELS.get(provider_key, {})
+    model = form.get("model", "").strip() or models_data.get("default", "")
+    api_key = form.get("api_key", "").strip()
+
+    neo_cfg_path = os.path.join(data_root, "legion", "instances", "neo", "config.json")
+    if os.path.isfile(neo_cfg_path):
+        with open(neo_cfg_path) as f:
+            neo_cfg = json.load(f)
+    else:
+        neo_cfg = {}
+
+    neo_cfg.setdefault("agents", {}).setdefault("defaults", {})["model"] = model
+    neo_cfg["agents"]["defaults"]["provider"] = provider_key
+    neo_cfg.setdefault("providers", {})[provider_key] = {
+        "api_key": api_key,
+        "api_base": api_base,
+    }
+
+    os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
+    with open(neo_cfg_path, "w", encoding="utf-8") as f:
+        json.dump(neo_cfg, f, indent=2, ensure_ascii=False)
+    print(f"[setup] 🔄 已更新 neo config.json (provider={provider_key})", flush=True)
+
+
+def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict]:
+    """Restore squad_config.json from backup, or create fresh if no backup.
+
+    Single and multi-agent modes use separate workspace directories, so
+    agent instance data is never touched during mode switch.  We only
+    restore squad_config.json; the agent directories are already in place.
+
+    Returns (squad_config, neo_config, oauth_cfg).
+    neo_config is empty dict when restored from backup (neo already exists).
+    """
+    fresh_start = form.get("fresh_start", "false") == "true"
+
+    if not fresh_start and _has_legion_backup(data_root):
+        backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+
+        # Load backup squad_config.json
+        with open(os.path.join(backup_dir, "squad_config.json")) as f:
+            squad_config = json.load(f)
+
+        # Update data_root and dlq_dir for current platform
+        old_data_root = squad_config.get("data_root", "")
+        squad_config["data_root"] = data_root
+        if "dlq_dir" in squad_config and old_data_root:
+            squad_config["dlq_dir"] = squad_config["dlq_dir"].replace(old_data_root, data_root)
+
+        # Update neo's config with new provider/model/api_key from form
+        _update_neo_config(data_root, form)
+
+        # Clean up any .removed.* directories for agents now in the squad
+        _cleanup_stale_removed(data_root, squad_config)
+
+        oauth_cfg = _build_oauth(form)
+        print(f"[setup] 🔄 从备份恢复 squad_config.json (agents: {list(squad_config.get('peers', {}).keys())})", flush=True)
+        return squad_config, {}, oauth_cfg
+
+    # Fresh start: clear old backup if any
+    if fresh_start:
+        backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir)
+            print(f"[setup] 🧹 已清除旧备份", flush=True)
+
+    # Create fresh legion config (only neo)
+    squad_config, neo_config, oauth_cfg = _build_legion_config(form)
+    _migrate_legacy_instances(data_root)
+    _cleanup_stale_removed(data_root, squad_config)
+    print(f"[setup] ✨ 全新 Legion 配置 (仅 neo)", flush=True)
+    return squad_config, neo_config, oauth_cfg
+
+
+def _cleanup_stale_removed(data_root: str, squad_config: dict) -> None:
+    """Remove .removed.* archive dirs for agents that are now in the squad roster."""
+    legion_instances = os.path.join(data_root, "legion", "instances")
+    if not os.path.isdir(legion_instances):
+        return
+
+    roster = set(squad_config.get("peers", {}).keys())
+    for entry in os.listdir(legion_instances):
+        # Match {name}.removed.{timestamp} pattern
+        if ".removed." not in entry:
+            continue
+        base_name = entry.split(".removed.")[0]
+        if base_name in roster:
+            rm_path = os.path.join(legion_instances, entry)
+            if os.path.isdir(rm_path):
+                shutil.rmtree(rm_path)
+                print(f"[setup] 🧹 已清理已归档副本: {entry}", flush=True)
+
+
 def _build_provider_form_data() -> tuple[str, str, str]:
     """Generate dynamic HTML/JS provider data from nanobot official registry.
 
@@ -361,11 +505,15 @@ SETUP_HTML = """\
         </label>
       </div>
 
-      <div id="legion-fields" class="hidden">
+       <div id="legion-fields" class="hidden">
         <label for="commander_user">管理员用户名</label>
         <input id="commander_user" name="commander_user" type="text"
                placeholder="你的 OAuth 登录用户名">
         <p class="tip">此用户拥有最高权限，可以管理所有 Agent。</p>
+        <label id="fresh-start-label" style="margin-top:10px;display:none">
+          <input type="checkbox" name="fresh_start" value="true" id="fresh_start" style="width:auto">
+          <span style="font-weight:normal">全新开始（忽略已有配置）</span>
+        </label>
       </div>
 
       <label for="provider">服务商</label>
@@ -507,6 +655,12 @@ if (HF_OAUTH_AUTO) {
   document.getElementById('oauth-auto-note').style.display = '';
 }
 
+// 检测已有 Legion 备份 → 多用户模式下显示"全新开始"复选框
+var LEGION_BACKUP_EXISTS = {LEGION_BACKUP_EXISTS};
+if (LEGION_BACKUP_EXISTS) {
+  document.getElementById('fresh-start-label').style.display = '';
+}
+
 // 平台检测：有 ms.show 域名 → ModelScope，否则 HuggingFace
 document.getElementById('oauth-link-ms').style.display = isMS ? '' : 'none';
 document.getElementById('oauth-link-hf').style.display = isMS ? 'none' : '';
@@ -616,12 +770,17 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
 
     # Generate dynamic provider data from nanobot official registry
     provider_opts, presets_js, key_urls_js = _build_provider_form_data()
+
+    # Detect legion backup for "fresh start" checkbox visibility
+    has_legion_backup = _has_legion_backup(DATA_ROOT)
+
     html = (SETUP_HTML
             .replace("{PROVIDER_OPTIONS}", provider_opts)
             .replace("{PROVIDER_PRESETS_JS}", presets_js)
             .replace("{PROVIDER_KEY_URLS_JS}", key_urls_js)
             .replace("{PREFILL_JS}", prefill_js)
-            .replace("{HF_OAUTH_AUTO}", hf_oauth_auto))
+            .replace("{HF_OAUTH_AUTO}", hf_oauth_auto)
+            .replace("{LEGION_BACKUP_EXISTS}", "true" if has_legion_backup else "false"))
     return HTMLResponse(html)
 
 
@@ -641,26 +800,34 @@ async def post_setup(request: Request) -> JSONResponse:
 
     try:
         if deploy_mode == "legion":
-            squad_config, neo_config, oauth_cfg = _build_legion_config(form)
+            squad_config, neo_config, oauth_cfg = _restore_legion_config(DATA_ROOT, form)
 
             # Write squad_config.json
-            squad_path = os.path.join(DATA_ROOT, "squad_config.json")
+            squad_path = os.path.join(DATA_ROOT, "legion", "squad_config.json")
+            os.makedirs(os.path.dirname(squad_path), exist_ok=True)
             with open(squad_path, "w", encoding="utf-8") as f:
                 json.dump(squad_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ squad_config.json 已写入: {json.dumps(list(squad_config.keys()))}", flush=True)
 
-            # Write neo's config.json
-            neo_cfg_path = os.path.join(DATA_ROOT, "instances", "neo", "config.json")
-            os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
-            with open(neo_cfg_path, "w", encoding="utf-8") as f:
-                json.dump(neo_config, f, indent=2, ensure_ascii=False)
-            print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
+            # Write neo's config.json only for fresh start (restore already wrote it)
+            if neo_config:
+                neo_cfg_path = os.path.join(DATA_ROOT, "legion", "instances", "neo", "config.json")
+                os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
+                with open(neo_cfg_path, "w", encoding="utf-8") as f:
+                    json.dump(neo_config, f, indent=2, ensure_ascii=False)
+                print(f"[setup] ✅ neo config.json 已写入: {neo_cfg_path}", flush=True)
         else:
-            # 清理旧 Legion 残留（从多用户模式切换到单用户模式）
-            legacy_squad = os.path.join(DATA_ROOT, "squad_config.json")
-            if os.path.exists(legacy_squad):
-                os.remove(legacy_squad)
-                print("[setup] 🧹 已清理旧的 squad_config.json（切换到单用户模式）", flush=True)
+            # 备份 Legion 配置（从多用户模式切换到单用户模式）
+            _backup_legion_config(DATA_ROOT)
+
+            # 清理旧 Legion 残留
+            for legacy in [
+                os.path.join(DATA_ROOT, "squad_config.json"),
+                os.path.join(DATA_ROOT, "legion", "squad_config.json"),
+            ]:
+                if os.path.exists(legacy):
+                    os.remove(legacy)
+                    print(f"[setup] 🧹 已清理旧的 squad_config.json ({legacy})", flush=True)
 
             config, oauth_cfg = _build_config(form)
             os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -708,5 +875,43 @@ def main() -> None:
     uvicorn.run(app, host="0.0.0.0", port=7860, log_level="warning")
 
 
+def _migrate_legacy_instances(data_root: str) -> None:
+    """Copy old agent instances from DATA_ROOT/instances/ to DATA_ROOT/legion/instances/.
+
+    Skips 'default' (single-agent), '_template', and 'logs'.
+    Only copies agent dirs that don't already exist in the legion target.
+    """
+    legacy_instances = os.path.join(data_root, "instances")
+    legion_instances = os.path.join(data_root, "legion", "instances")
+
+    if not os.path.isdir(legacy_instances):
+        return
+
+    os.makedirs(legion_instances, exist_ok=True)
+
+    # Only migrate dirs that look like nanobot agent instances (contain config.json)
+    skip = {"default", "_template", "logs", ".git"}
+    migrated = 0
+
+    for name in sorted(os.listdir(legacy_instances)):
+        if name in skip:
+            continue
+        src = os.path.join(legacy_instances, name)
+        dst = os.path.join(legion_instances, name)
+        if not os.path.isdir(src):
+            continue
+        if not os.path.isfile(os.path.join(src, "config.json")):
+            continue  # not an agent instance, skip
+        if os.path.exists(dst):
+            continue  # already in legion, skip
+        shutil.copytree(src, dst)
+        print(f"[setup] 🔄 迁移旧 agent: {name} → legion/instances/{name}", flush=True)
+        migrated += 1
+
+    if migrated:
+        print(f"[setup] ✅ 已迁移 {migrated} 个旧 agent 到 legion/", flush=True)
+
+
 if __name__ == "__main__":
     main()
+
