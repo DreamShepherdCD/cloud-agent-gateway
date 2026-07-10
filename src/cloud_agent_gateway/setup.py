@@ -269,7 +269,13 @@ def _has_legion_backup(data_root: str) -> bool:
 
 
 def _backup_legion_config(data_root: str) -> None:
-    """Backup current legion config before switching to single-agent mode."""
+    """Backup squad_config.json before switching to single-agent mode.
+
+    Single and multi-agent modes use separate workspace directories, so
+    agent instance data (configs, channels, sessions, etc.) is never
+    touched during mode switch.  Only squad_config.json needs to be
+    saved so the previous multi-agent roster can be restored later.
+    """
     legion_dir = os.path.join(data_root, "legion")
     backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
 
@@ -282,45 +288,17 @@ def _backup_legion_config(data_root: str) -> None:
         shutil.rmtree(backup_dir)
     os.makedirs(backup_dir)
 
-    # Copy squad_config.json
+    # Only squad_config.json is needed — instance data stays in place
     shutil.copy2(squad_path, os.path.join(backup_dir, "squad_config.json"))
 
-    # Copy each agent's config.json + channels/*/account.json
-    instances_dir = os.path.join(legion_dir, "instances")
-    if os.path.isdir(instances_dir):
-        try:
-            with open(squad_path) as f:
-                squad_cfg = json.load(f)
-            peers = squad_cfg.get("peers", {})
-        except Exception:
-            peers = {}
+    try:
+        with open(squad_path) as f:
+            squad_cfg = json.load(f)
+        peers = squad_cfg.get("peers", {})
+    except Exception:
+        peers = {}
 
-        for agent_name in os.listdir(instances_dir):
-            src_agent = os.path.join(instances_dir, agent_name)
-            if not os.path.isdir(src_agent):
-                continue
-            # Only backup agents in the roster
-            if agent_name not in peers:
-                continue
-
-            dst_agent = os.path.join(backup_dir, "instances", agent_name)
-
-            # config.json
-            cfg_path = os.path.join(src_agent, "config.json")
-            if os.path.isfile(cfg_path):
-                os.makedirs(os.path.dirname(os.path.join(dst_agent, "config.json")), exist_ok=True)
-                shutil.copy2(cfg_path, os.path.join(dst_agent, "config.json"))
-
-            # channels/*/account.json
-            channels_dir = os.path.join(src_agent, "channels")
-            if os.path.isdir(channels_dir):
-                for ch_name in os.listdir(channels_dir):
-                    acct_path = os.path.join(channels_dir, ch_name, "account.json")
-                    if os.path.isfile(acct_path):
-                        os.makedirs(os.path.join(dst_agent, "channels", ch_name), exist_ok=True)
-                        shutil.copy2(acct_path, os.path.join(dst_agent, "channels", ch_name, "account.json"))
-
-    print(f"[setup] 📦 已备份 Legion 配置到 {LEGION_BACKUP_DIR}/ ({len(peers)} agents)", flush=True)
+    print(f"[setup] 📦 已备份 squad_config.json 到 {LEGION_BACKUP_DIR}/ ({len(peers)} agents)", flush=True)
 
 
 def _update_neo_config(data_root: str, form: dict) -> None:
@@ -356,10 +334,14 @@ def _update_neo_config(data_root: str, form: dict) -> None:
 
 
 def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict]:
-    """Restore legion config from backup, or create fresh if no backup exists.
+    """Restore squad_config.json from backup, or create fresh if no backup.
+
+    Single and multi-agent modes use separate workspace directories, so
+    agent instance data is never touched during mode switch.  We only
+    restore squad_config.json; the agent directories are already in place.
 
     Returns (squad_config, neo_config, oauth_cfg).
-    neo_config is empty dict when restored from backup (neo already written).
+    neo_config is empty dict when restored from backup (neo already exists).
     """
     fresh_start = form.get("fresh_start", "false") == "true"
 
@@ -376,28 +358,6 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
         if "dlq_dir" in squad_config and old_data_root:
             squad_config["dlq_dir"] = squad_config["dlq_dir"].replace(old_data_root, data_root)
 
-        # Restore agent configs from backup
-        legion_instances = os.path.join(data_root, "legion", "instances")
-        backup_instances = os.path.join(backup_dir, "instances")
-        if os.path.isdir(backup_instances):
-            for agent_name in os.listdir(backup_instances):
-                src = os.path.join(backup_instances, agent_name)
-                dst = os.path.join(legion_instances, agent_name)
-                if os.path.isdir(src):
-                    if os.path.exists(dst):
-                        shutil.rmtree(dst)
-                    shutil.copytree(src, dst)
-
-                    # Clean up stale .removed.* directories for this agent
-                    # (they were archived before backup — now restored, remove archived copies)
-                    removed_prefix = agent_name + ".removed."
-                    for entry in os.listdir(legion_instances):
-                        if entry.startswith(removed_prefix):
-                            rm_path = os.path.join(legion_instances, entry)
-                            if os.path.isdir(rm_path):
-                                shutil.rmtree(rm_path)
-                                print(f"[setup] 🧹 已清理已归档副本: {entry}", flush=True)
-
         # Update neo's config with new provider/model/api_key from form
         _update_neo_config(data_root, form)
 
@@ -405,7 +365,7 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
         _cleanup_stale_removed(data_root, squad_config)
 
         oauth_cfg = _build_oauth(form)
-        print(f"[setup] 🔄 从备份恢复 Legion 配置 (agents: {list(squad_config.get('peers', {}).keys())})", flush=True)
+        print(f"[setup] 🔄 从备份恢复 squad_config.json (agents: {list(squad_config.get('peers', {}).keys())})", flush=True)
         return squad_config, {}, oauth_cfg
 
     # Fresh start: clear old backup if any
