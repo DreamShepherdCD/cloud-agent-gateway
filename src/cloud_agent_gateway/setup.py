@@ -401,6 +401,9 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
         # Update neo's config with new provider/model/api_key from form
         _update_neo_config(data_root, form)
 
+        # Clean up any .removed.* directories for agents now in the squad
+        _cleanup_stale_removed(data_root, squad_config)
+
         oauth_cfg = _build_oauth(form)
         print(f"[setup] 🔄 从备份恢复 Legion 配置 (agents: {list(squad_config.get('peers', {}).keys())})", flush=True)
         return squad_config, {}, oauth_cfg
@@ -415,8 +418,28 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
     # Create fresh legion config (only neo)
     squad_config, neo_config, oauth_cfg = _build_legion_config(form)
     _migrate_legacy_instances(data_root)
+    _cleanup_stale_removed(data_root, squad_config)
     print(f"[setup] ✨ 全新 Legion 配置 (仅 neo)", flush=True)
     return squad_config, neo_config, oauth_cfg
+
+
+def _cleanup_stale_removed(data_root: str, squad_config: dict) -> None:
+    """Remove .removed.* archive dirs for agents that are now in the squad roster."""
+    legion_instances = os.path.join(data_root, "legion", "instances")
+    if not os.path.isdir(legion_instances):
+        return
+
+    roster = set(squad_config.get("peers", {}).keys())
+    for entry in os.listdir(legion_instances):
+        # Match {name}.removed.{timestamp} pattern
+        if ".removed." not in entry:
+            continue
+        base_name = entry.split(".removed.")[0]
+        if base_name in roster:
+            rm_path = os.path.join(legion_instances, entry)
+            if os.path.isdir(rm_path):
+                shutil.rmtree(rm_path)
+                print(f"[setup] 🧹 已清理已归档副本: {entry}", flush=True)
 
 
 def _build_provider_form_data() -> tuple[str, str, str]:
