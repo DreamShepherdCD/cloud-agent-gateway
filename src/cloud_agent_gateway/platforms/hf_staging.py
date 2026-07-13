@@ -188,10 +188,10 @@ class HFStagingPlatform(PlatformProtocol):
 
         Commander → WEBUI_AGENT
         Mapped user  → their assigned agent (via USER_AGENT_MAP)
-        Everyone else → WEBUI_AGENT (fallback)
+        Unauthorised  → "" (caller must reject)
         """
         if not username or username == "Unknown":
-            return self._webui_agent
+            return ""
         if username in self._commander_whitelist:
             return self._webui_agent
         peer_key = self._user_agent_map.get(username, "")
@@ -199,7 +199,7 @@ class HFStagingPlatform(PlatformProtocol):
             agent_name = peer_key[len("NANOBOT_PEER_"):].lower()
             if agent_name in self._squad_roster:
                 return agent_name
-        return self._webui_agent
+        return ""
 
     def is_commander(self, session_user) -> bool:
         if not session_user:

@@ -264,8 +264,9 @@ class ModelScopePlatform(PlatformProtocol):
         return self._user_agent_map
 
     def get_agent_for_user(self, username: str) -> str:
+        """Commander → WEBUI_AGENT; mapped user → their agent; unauthorised → ''."""
         if not username or username == "guest":
-            return self._webui_agent
+            return ""
         if username in self._commander_whitelist:
             return self._webui_agent
         peer_key = self._user_agent_map.get(username, "")
@@ -273,10 +274,10 @@ class ModelScopePlatform(PlatformProtocol):
             agent = peer_key[len("NANOBOT_PEER_"):].lower()
             if agent in self._squad_roster:
                 return agent
-            return self._webui_agent
+            return ""
         if peer_key:
             return peer_key
-        return self._webui_agent
+        return ""
 
     def is_commander(self, session_user: Any) -> bool:
         if session_user is None:
