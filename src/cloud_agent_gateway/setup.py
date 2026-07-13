@@ -252,7 +252,13 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
                 "api_base": api_base,
             }
         },
-        "channels": {"websocket": {"enabled": True, "port": 0}},
+        "channels": {
+            "websocket": {"enabled": True, "port": 0},
+            "weixin": {"enabled": True, "allow_from": ["*"]},
+            "feishu": {"enabled": True, "allow_from": ["*"]},
+            "dingtalk": {"enabled": True, "allow_from": ["*"]},
+            "qq": {"enabled": True, "allow_from": ["*"]},
+        },
     }
 
     oauth_cfg = _build_oauth(form)
