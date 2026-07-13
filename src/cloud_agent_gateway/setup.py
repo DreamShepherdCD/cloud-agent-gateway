@@ -333,10 +333,19 @@ def _update_neo_config(data_root: str, form: dict) -> None:
         "api_base": api_base,
     }
 
+    # Ensure social channels are present and enabled for commander (align with single-agent mode)
+    for ch_name in ("weixin", "feishu", "dingtalk", "qq"):
+        neo_cfg.setdefault("channels", {}).setdefault(ch_name, {"allow_from": ["*"]})
+        neo_cfg["channels"][ch_name]["enabled"] = True
+
     os.makedirs(os.path.dirname(neo_cfg_path), exist_ok=True)
     with open(neo_cfg_path, "w", encoding="utf-8") as f:
         json.dump(neo_cfg, f, indent=2, ensure_ascii=False)
     print(f"[setup] 🔄 已更新 neo config.json (provider={provider_key})", flush=True)
+    # Diagnostic: show channel enabled state
+    for ch_name in ("weixin", "feishu", "dingtalk", "qq", "websocket"):
+        ch = neo_cfg.get("channels", {}).get(ch_name, {})
+        print(f"[setup]    📡 {ch_name}: enabled={ch.get('enabled')}", flush=True)
 
 
 def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict]:
