@@ -265,46 +265,62 @@ def _build_legion_config(form: dict[str, str]) -> tuple[dict, dict, dict]:
     return squad_config, neo_config, oauth_cfg
 
 
-LEGION_BACKUP_DIR = "legion_backup"
+LEGION_BACKUP_DIR = "legion_backup"  # deprecated — kept for old backup cleanup
 
 
-def _has_legion_backup(data_root: str) -> bool:
-    """Check if a legion backup exists."""
-    backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
-    return os.path.isfile(os.path.join(backup_dir, "squad_config.json"))
+def _has_removed_agents(data_root: str) -> bool:
+    """Check if there are archived (.removed.*) agent directories."""
+    legion_instances = os.path.join(data_root, "legion", "instances")
+    if not os.path.isdir(legion_instances):
+        return False
+    for entry in os.listdir(legion_instances):
+        if ".removed." in entry and os.path.isdir(os.path.join(legion_instances, entry)):
+            return True
+    return False
 
 
 def _backup_legion_config(data_root: str) -> None:
-    """Backup squad_config.json before switching to single-agent mode.
+    """Archive all agent directories to .removed.* format for archive-area restore.
 
-    Single and multi-agent modes use separate workspace directories, so
-    agent instance data (configs, channels, sessions, etc.) is never
-    touched during mode switch.  Only squad_config.json needs to be
-    saved so the previous multi-agent roster can be restored later.
+    When switching from multi-agent to single-agent mode, all agent instance
+    directories (roster members, orphans, already-archived) are renamed to
+    the .removed.{timestamp} format so they appear in the archive area when
+    switching back.  squad_config.json is deleted to enter single-agent mode.
     """
-    legion_dir = os.path.join(data_root, "legion")
-    backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
-
-    squad_path = os.path.join(legion_dir, "squad_config.json")
-    if not os.path.isfile(squad_path):
+    legion_instances = os.path.join(data_root, "legion", "instances")
+    if not os.path.isdir(legion_instances):
         return
 
-    # Clean old backup
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    count = 0
+
+    for entry in sorted(os.listdir(legion_instances)):
+        if entry == "_template":
+            continue
+        entry_path = os.path.join(legion_instances, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        # Already archived — leave as-is
+        if ".removed." in entry:
+            continue
+
+        new_name = f"{entry}.removed.{timestamp}"
+        new_path = os.path.join(legion_instances, new_name)
+        shutil.move(entry_path, new_path)
+        print(f"[setup] 📦 已归档 {entry} → {new_name}", flush=True)
+        count += 1
+
+    # Delete squad_config.json to trigger single-agent mode on restart
+    squad_path = os.path.join(data_root, "legion", "squad_config.json")
+    if os.path.isfile(squad_path):
+        os.remove(squad_path)
+        print(f"[setup] 🗑️ 已删除 squad_config.json（进入单 agent 模式）", flush=True)
+
+    # Clean up old-style backup if present
+    backup_dir = os.path.join(data_root, "legion_backup")
     if os.path.exists(backup_dir):
         shutil.rmtree(backup_dir)
-    os.makedirs(backup_dir)
-
-    # Only squad_config.json is needed — instance data stays in place
-    shutil.copy2(squad_path, os.path.join(backup_dir, "squad_config.json"))
-
-    try:
-        with open(squad_path) as f:
-            squad_cfg = json.load(f)
-        peers = squad_cfg.get("peers", {})
-    except Exception:
-        peers = {}
-
-    print(f"[setup] 📦 已备份 squad_config.json 到 {LEGION_BACKUP_DIR}/ ({len(peers)} agents)", flush=True)
+        print(f"[setup] 🧹 已清理旧格式备份", flush=True)
 
 
 def _update_neo_config(data_root: str, form: dict) -> None:
@@ -349,48 +365,19 @@ def _update_neo_config(data_root: str, form: dict) -> None:
 
 
 def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict]:
-    """Restore squad_config.json from backup, or create fresh if no backup.
+    """Create fresh legion config (only neo).
 
-    Single and multi-agent modes use separate workspace directories, so
-    agent instance data is never touched during mode switch.  We only
-    restore squad_config.json; the agent directories are already in place.
-
-    Returns (squad_config, neo_config, oauth_cfg).
-    neo_config is empty dict when restored from backup (neo already exists).
+    Previously active agent directories were renamed to .removed.* by
+    _backup_legion_config.  They appear in the archive area of the agent
+    management UI for manual restore after startup.
     """
-    fresh_start = form.get("fresh_start", "false") == "true"
+    # Clean up old-style backup if present
+    backup_dir = os.path.join(data_root, "legion_backup")
+    if os.path.exists(backup_dir):
+        shutil.rmtree(backup_dir)
+        print(f"[setup] 🧹 已清理旧格式备份", flush=True)
 
-    if not fresh_start and _has_legion_backup(data_root):
-        backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
-
-        # Load backup squad_config.json
-        with open(os.path.join(backup_dir, "squad_config.json")) as f:
-            squad_config = json.load(f)
-
-        # Update data_root and dlq_dir for current platform
-        old_data_root = squad_config.get("data_root", "")
-        squad_config["data_root"] = data_root
-        if "dlq_dir" in squad_config and old_data_root:
-            squad_config["dlq_dir"] = squad_config["dlq_dir"].replace(old_data_root, data_root)
-
-        # Update neo's config with new provider/model/api_key from form
-        _update_neo_config(data_root, form)
-
-        # Clean up any .removed.* directories for agents now in the squad
-        _cleanup_stale_removed(data_root, squad_config)
-
-        oauth_cfg = _build_oauth(form)
-        print(f"[setup] 🔄 从备份恢复 squad_config.json (agents: {list(squad_config.get('peers', {}).keys())})", flush=True)
-        return squad_config, {}, oauth_cfg
-
-    # Fresh start: clear old backup if any
-    if fresh_start:
-        backup_dir = os.path.join(data_root, LEGION_BACKUP_DIR)
-        if os.path.exists(backup_dir):
-            shutil.rmtree(backup_dir)
-            print(f"[setup] 🧹 已清除旧备份", flush=True)
-
-    # Create fresh legion config (only neo)
+    # Always fresh start — archived agents are restored from UI
     squad_config, neo_config, oauth_cfg = _build_legion_config(form)
     _migrate_legacy_instances(data_root)
     _cleanup_stale_removed(data_root, squad_config)
@@ -786,8 +773,8 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
     # Generate dynamic provider data from nanobot official registry
     provider_opts, presets_js, key_urls_js = _build_provider_form_data()
 
-    # Detect legion backup for "fresh start" checkbox visibility
-    has_legion_backup = _has_legion_backup(DATA_ROOT)
+    # Detect archived agents for "fresh start" checkbox visibility
+    has_archived = _has_removed_agents(DATA_ROOT)
 
     html = (SETUP_HTML
             .replace("{PROVIDER_OPTIONS}", provider_opts)
@@ -795,7 +782,7 @@ console.log('[setup] pre-filled provider={provider} model={model} api_key_len={l
             .replace("{PROVIDER_KEY_URLS_JS}", key_urls_js)
             .replace("{PREFILL_JS}", prefill_js)
             .replace("{HF_OAUTH_AUTO}", hf_oauth_auto)
-            .replace("{LEGION_BACKUP_EXISTS}", "true" if has_legion_backup else "false"))
+             .replace("{LEGION_BACKUP_EXISTS}", "true" if has_archived else "false"))
     return HTMLResponse(html)
 
 
