@@ -913,7 +913,7 @@ def _migrate_legacy_instances(data_root: str) -> None:
             continue  # not an agent instance, skip
         if os.path.exists(dst):
             continue  # already in legion, skip
-        shutil.copytree(src, dst)
+        shutil.move(src, dst)
         print(f"[setup] 🔄 迁移旧 agent: {name} → legion/instances/{name}", flush=True)
         migrated += 1
 
