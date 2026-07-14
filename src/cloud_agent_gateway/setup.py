@@ -292,14 +292,20 @@ def _backup_legion_config(data_root: str) -> None:
     if not os.path.isdir(legion_instances):
         return
 
+    # Non-agent directories that should never be archived
+    _skip = {"_template", ".git", ".discarded", "logs", "memory", "sessions",
+             "cron", "repos", "docs", "skills", "workspace"}
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     count = 0
 
     for entry in sorted(os.listdir(legion_instances)):
-        if entry == "_template":
+        if entry in _skip or entry.startswith("."):
             continue
         entry_path = os.path.join(legion_instances, entry)
         if not os.path.isdir(entry_path):
+            continue
+        # Only archive directories that contain config.json (agent instances)
+        if not os.path.isfile(os.path.join(entry_path, "config.json")):
             continue
         # Already archived — leave as-is
         if ".removed." in entry:
