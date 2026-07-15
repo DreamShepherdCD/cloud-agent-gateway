@@ -194,11 +194,14 @@ class HFStagingPlatform(PlatformProtocol):
             return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        peer_key = self._user_agent_map.get(username, "")
-        if peer_key and peer_key.startswith("NANOBOT_PEER_"):
-            agent_name = peer_key[len("NANOBOT_PEER_"):].lower()
-            if agent_name in self._squad_roster:
-                return agent_name
+        agent = self._user_agent_map.get(username, "")
+        if not agent:
+            return ""
+        # strip legacy NANOBOT_PEER_ prefix
+        if agent.upper().startswith("NANOBOT_PEER_"):
+            agent = agent[len("NANOBOT_PEER_"):].lower()
+        if agent in self._squad_roster:
+            return agent
         return ""
 
     def is_commander(self, session_user) -> bool:
@@ -220,12 +223,15 @@ class HFStagingPlatform(PlatformProtocol):
         Member → allowed only if target is their own mapped agent.
         """
         effective = sender.lower()
-        # Reverse lookup: agent alias → username
+        # Reverse lookup: agent name → username (strip any legacy prefix)
         agent_to_user: dict[str, str] = {}
-        for uname, peer_key in self._user_agent_map.items():
-            if isinstance(peer_key, str) and peer_key.upper().startswith("NANOBOT_PEER_"):
-                aname = peer_key[len("NANOBOT_PEER_"):].lower()
-                agent_to_user[aname] = uname.lower()
+        for uname, agent in self._user_agent_map.items():
+            if not isinstance(agent, str):
+                continue
+            aname = agent
+            if aname.upper().startswith("NANOBOT_PEER_"):
+                aname = aname[len("NANOBOT_PEER_"):].lower()
+            agent_to_user[aname.lower()] = uname.lower()
         if effective in agent_to_user:
             effective = agent_to_user[effective]
 
@@ -234,9 +240,13 @@ class HFStagingPlatform(PlatformProtocol):
             return True
 
         if effective in self._user_agent_map:
-            peer_key = self._user_agent_map[effective]
-            if isinstance(peer_key, str) and peer_key.upper().startswith("NANOBOT_PEER_"):
-                return peer_key[len("NANOBOT_PEER_"):].lower() == target
+            agent = self._user_agent_map[effective]
+            if not isinstance(agent, str):
+                return False
+            target_agent = agent
+            if target_agent.upper().startswith("NANOBOT_PEER_"):
+                target_agent = target_agent[len("NANOBOT_PEER_"):].lower()
+            return target_agent.lower() == target.lower()
         return False
 
     # ═══════════════════════════════════════════════════════════

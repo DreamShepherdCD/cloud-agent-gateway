@@ -269,14 +269,14 @@ class ModelScopePlatform(PlatformProtocol):
             return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        peer_key = self._user_agent_map.get(username, "")
-        if peer_key.startswith("NANOBOT_PEER_"):
-            agent = peer_key[len("NANOBOT_PEER_"):].lower()
-            if agent in self._squad_roster:
-                return agent
+        agent = self._user_agent_map.get(username, "")
+        if not agent:
             return ""
-        if peer_key:
-            return peer_key
+        # strip legacy NANOBOT_PEER_ prefix
+        if agent.upper().startswith("NANOBOT_PEER_"):
+            agent = agent[len("NANOBOT_PEER_"):].lower()
+        if agent in self._squad_roster:
+            return agent
         return ""
 
     def is_commander(self, session_user: Any) -> bool:
