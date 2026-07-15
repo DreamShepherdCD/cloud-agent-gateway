@@ -269,13 +269,8 @@ class ModelScopePlatform(PlatformProtocol):
             return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        agent = self._user_agent_map.get(username, "")
-        if not agent:
-            return ""
-        # strip legacy NANOBOT_PEER_ prefix
-        if agent.upper().startswith("NANOBOT_PEER_"):
-            agent = agent[len("NANOBOT_PEER_"):].lower()
-        if agent in self._squad_roster:
+        agent = self._user_agent_map.get(username, "").lower()
+        if agent and agent in self._squad_roster:
             return agent
         return ""
 

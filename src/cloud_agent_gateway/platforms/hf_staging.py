@@ -194,13 +194,8 @@ class HFStagingPlatform(PlatformProtocol):
             return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        agent = self._user_agent_map.get(username, "")
-        if not agent:
-            return ""
-        # strip legacy NANOBOT_PEER_ prefix
-        if agent.upper().startswith("NANOBOT_PEER_"):
-            agent = agent[len("NANOBOT_PEER_"):].lower()
-        if agent in self._squad_roster:
+        agent = self._user_agent_map.get(username, "").lower()
+        if agent and agent in self._squad_roster:
             return agent
         return ""
 
@@ -223,15 +218,11 @@ class HFStagingPlatform(PlatformProtocol):
         Member → allowed only if target is their own mapped agent.
         """
         effective = sender.lower()
-        # Reverse lookup: agent name → username (strip any legacy prefix)
+        # Reverse lookup: agent name → username
         agent_to_user: dict[str, str] = {}
         for uname, agent in self._user_agent_map.items():
-            if not isinstance(agent, str):
-                continue
-            aname = agent
-            if aname.upper().startswith("NANOBOT_PEER_"):
-                aname = aname[len("NANOBOT_PEER_"):].lower()
-            agent_to_user[aname.lower()] = uname.lower()
+            if isinstance(agent, str):
+                agent_to_user[agent.lower()] = uname.lower()
         if effective in agent_to_user:
             effective = agent_to_user[effective]
 
@@ -240,13 +231,9 @@ class HFStagingPlatform(PlatformProtocol):
             return True
 
         if effective in self._user_agent_map:
-            agent = self._user_agent_map[effective]
-            if not isinstance(agent, str):
-                return False
-            target_agent = agent
-            if target_agent.upper().startswith("NANOBOT_PEER_"):
-                target_agent = target_agent[len("NANOBOT_PEER_"):].lower()
-            return target_agent.lower() == target.lower()
+            agent = self._user_agent_map.get(effective)
+            if isinstance(agent, str):
+                return agent.lower() == target.lower()
         return False
 
     # ═══════════════════════════════════════════════════════════
