@@ -188,18 +188,16 @@ class HFStagingPlatform(PlatformProtocol):
 
         Commander → WEBUI_AGENT
         Mapped user  → their assigned agent (via USER_AGENT_MAP)
-        Everyone else → WEBUI_AGENT (fallback)
+        Unauthorised  → "" (caller must reject)
         """
         if not username or username == "Unknown":
-            return self._webui_agent
+            return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        peer_key = self._user_agent_map.get(username, "")
-        if peer_key and peer_key.startswith("NANOBOT_PEER_"):
-            agent_name = peer_key[len("NANOBOT_PEER_"):].lower()
-            if agent_name in self._squad_roster:
-                return agent_name
-        return self._webui_agent
+        agent = self._user_agent_map.get(username, "").lower()
+        if agent and agent in self._squad_roster:
+            return agent
+        return ""
 
     def is_commander(self, session_user) -> bool:
         if not session_user:
@@ -220,12 +218,11 @@ class HFStagingPlatform(PlatformProtocol):
         Member → allowed only if target is their own mapped agent.
         """
         effective = sender.lower()
-        # Reverse lookup: agent alias → username
+        # Reverse lookup: agent name → username
         agent_to_user: dict[str, str] = {}
-        for uname, peer_key in self._user_agent_map.items():
-            if isinstance(peer_key, str) and peer_key.upper().startswith("NANOBOT_PEER_"):
-                aname = peer_key[len("NANOBOT_PEER_"):].lower()
-                agent_to_user[aname] = uname.lower()
+        for uname, agent in self._user_agent_map.items():
+            if isinstance(agent, str):
+                agent_to_user[agent.lower()] = uname.lower()
         if effective in agent_to_user:
             effective = agent_to_user[effective]
 
@@ -234,9 +231,9 @@ class HFStagingPlatform(PlatformProtocol):
             return True
 
         if effective in self._user_agent_map:
-            peer_key = self._user_agent_map[effective]
-            if isinstance(peer_key, str) and peer_key.upper().startswith("NANOBOT_PEER_"):
-                return peer_key[len("NANOBOT_PEER_"):].lower() == target
+            agent = self._user_agent_map.get(effective)
+            if isinstance(agent, str):
+                return agent.lower() == target.lower()
         return False
 
     # ═══════════════════════════════════════════════════════════

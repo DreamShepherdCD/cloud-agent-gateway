@@ -215,8 +215,7 @@ p { color:#999; margin-bottom:2rem; font-size:0.95rem; }
 _AUTH_FREE = {LOGIN_PATH, LOGIN_START_PATH, CALLBACK_PATH,
               "/auth/callback", "/login/callback",
               "/health", "/-/health",
-              "/api/squad/relay",
-              "/reset-setup"}
+              "/api/squad/relay"}
 for _b in _bindings:
     _AUTH_FREE.add(f"/bind/{_b.name}")
     for _path_suffix, _method, _handler in _b.public_routes:
@@ -786,6 +785,8 @@ async def reset_setup(request: Request) -> JSONResponse:
     After calling this, the user should manually restart the space to enter
     Phase 1 setup. The preserved config.json will be used to pre-fill the form.
     """
+    if not request.session.get("user"):
+        return JSONResponse({"ok": False, "error": "请先登录"}, status_code=401)
     deleted = []
     errors = []
 
