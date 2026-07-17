@@ -372,8 +372,15 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
         with open(bak_files[0], encoding="utf-8") as f:
             squad_config = json.load(f)
         print(f"[setup] 🔄 从备份恢复 squad_config: {os.path.basename(bak_files[0])}", flush=True)
+        # Diagnose: check squad_path state right after restore
+        print(f"[setup] 🔍 _restore: exists={os.path.exists(squad_path)!r}",
+              f"isfile={os.path.isfile(squad_path)!r}",
+              f"isdir={os.path.isdir(squad_path)!r}", flush=True)
         _migrate_legacy_instances(data_root)
         _cleanup_stale_removed(data_root, squad_config)
+        print(f"[setup] 🔍 _restore: after cleanup: exists={os.path.exists(squad_path)!r}",
+              f"isfile={os.path.isfile(squad_path)!r}",
+              f"isdir={os.path.isdir(squad_path)!r}", flush=True)
         return squad_config, None, _build_oauth(form)
 
     # No backup — fresh start
@@ -813,6 +820,18 @@ async def post_setup(request: Request) -> JSONResponse:
             # Write squad_config.json
             squad_path = os.path.join(DATA_ROOT, "legion", "squad_config.json")
             os.makedirs(os.path.dirname(squad_path), exist_ok=True)
+            print(f"[setup] 🔍 squad_path={squad_path!r}", flush=True)
+            print(f"[setup] 🔍 squad_path exists={os.path.exists(squad_path)!r}",
+                  f"isfile={os.path.isfile(squad_path)!r}",
+                  f"isdir={os.path.isdir(squad_path)!r}",
+                  f"islink={os.path.islink(squad_path)!r}", flush=True)
+            if os.path.isdir(squad_path):
+                children = os.listdir(squad_path)
+                print(f"[setup] 🔍 squad_path 是目录，内容: {children!r}", flush=True)
+            # Guard: an old directory at the target path blocks file creation
+            if os.path.isdir(squad_path):
+                shutil.rmtree(squad_path)
+                print(f"[setup] 🧹 已清理 squad_config.json 目录残留", flush=True)
             with open(squad_path, "w", encoding="utf-8") as f:
                 json.dump(squad_config, f, indent=2, ensure_ascii=False)
             print(f"[setup] ✅ squad_config.json 已写入: {json.dumps(list(squad_config.keys()))}", flush=True)
