@@ -373,11 +373,8 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
         with open(bak_files[0], encoding="utf-8") as f:
             squad_config = json.load(f)
         print(f"[setup] 🔄 从备份恢复 squad_config: {os.path.basename(bak_files[0])}", flush=True)
-        # Backward compat: old backups may lack 'owner' field
-        if "owner" not in squad_config:
-            whitelist = squad_config.get("commander_whitelist", [])
-            squad_config["owner"] = whitelist[0] if whitelist else ""
-            print(f"[setup] 🔄 从白名单推导 owner: {squad_config['owner']}", flush=True)
+        # Owner always reflects the form submission (commander_user is required)
+        squad_config["owner"] = form.get("commander_user", squad_config.get("owner", ""))
         # Diagnose: check squad_path state right after restore
         print(f"[setup] 🔍 _restore: exists={os.path.exists(squad_path)!r}",
               f"isfile={os.path.isfile(squad_path)!r}",
