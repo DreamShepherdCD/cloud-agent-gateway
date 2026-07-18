@@ -392,29 +392,49 @@ def _restore_legion_config(data_root: str, form: dict) -> tuple[dict, dict, dict
 
 
 def _cleanup_stale_removed(data_root: str, squad_config: dict) -> None:
-    """Remove .removed.* archive dirs for agents that are now active in the squad roster.
+    """Restore .removed.* archive dirs for active agents per squad_config.json.
 
-    Archived agents (zone="archived") keep their .removed.* dirs.
+    For each peer with zone="active" (or missing zone field):
+      - If the agent dir does not exist but a .removed.{name}.* archive does,
+        rename the archive back to the agent name.
+      - If neither exists, leave it (gatekeeper will seed on first start).
+
+    Archived agents (zone="archived") keep their .removed.* dirs untouched.
+    Orphan .removed.* dirs not referenced in squad_config are left alone.
     """
     legion_instances = os.path.join(data_root, "legion", "instances")
     if not os.path.isdir(legion_instances):
         return
 
     peers = squad_config.get("peers", {})
+
+    # Index existing .removed.* archives by base name
+    archives: dict[str, str] = {}
     for entry in os.listdir(legion_instances):
-        # Match {name}.removed.{timestamp} pattern
         if ".removed." not in entry:
             continue
         base_name = entry.split(".removed.")[0]
-        if base_name not in peers:
+        archives.setdefault(base_name, entry)  # keep first match
+
+    for name, peer in peers.items():
+        zone = peer.get("zone", "active")
+        if zone == "archived":
+            continue  # keep archive as-is
+
+        target = os.path.join(legion_instances, name)
+        if os.path.exists(target):
+            continue  # already present
+
+        archive_entry = archives.get(name)
+        if archive_entry is None:
+            continue  # nothing to restore
+
+        archive_path = os.path.join(legion_instances, archive_entry)
+        if not os.path.isdir(archive_path):
             continue
-        # Only clean up .removed.* for active (non-archived) agents
-        if peers[base_name].get("zone", "active") == "archived":
-            continue
-        rm_path = os.path.join(legion_instances, entry)
-        if os.path.isdir(rm_path):
-            shutil.rmtree(rm_path)
-            print(f"[setup] 🧹 已清理已归档副本: {entry}", flush=True)
+
+        os.rename(archive_path, target)
+        print(f"[setup] 🔄 从归档还原: {archive_entry} → {name}", flush=True)
 
 
 def _build_provider_form_data() -> tuple[str, str, str]:
