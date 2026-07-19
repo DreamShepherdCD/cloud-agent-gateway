@@ -12,7 +12,6 @@ with routes at ``/api/squad/auth/*`` to avoid MS platform interception.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
@@ -95,25 +94,9 @@ class ModelScopePlatform(PlatformProtocol):
             self._webui_agent = webui_agent or get_webui_agent()
             if squad_roster is None:
                 squad_roster = get_peers()
-        except ImportError:
-            logger.warning("squad_config_loader not available — falling back to env vars")
-            self._commander_whitelist = [
-                u.strip()
-                for u in os.environ.get("COMMANDER_WHITELIST", "").split(",")
-                if u.strip()
-            ]
-            # USER_AGENT_MAP: flat dict from env
-            self._user_agent_map = {}
-            raw = os.environ.get("USER_AGENT_MAP", "")
-            if raw:
-                try:
-                    self._user_agent_map = json.loads(raw)
-                except json.JSONDecodeError:
-                    for pair in raw.split(","):
-                        if ":" in pair:
-                            k, v = pair.split(":", 1)
-                            self._user_agent_map[k.strip()] = v.strip()
-            self._webui_agent = webui_agent or os.environ.get("WEBUI_AGENT", "neo")
+        except ImportError as e:
+            logger.error("squad_config_loader unavailable — cannot load squad config: %s", e)
+            raise
 
         self._squad_roster = squad_roster or {}
         logger.info(
