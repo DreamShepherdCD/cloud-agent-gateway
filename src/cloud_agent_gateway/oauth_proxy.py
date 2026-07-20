@@ -72,7 +72,49 @@ LOGIN_PATH = getattr(PLATFORM, "login_route_path", "/login")
 LOGIN_START_PATH = "/auth/start"
 CALLBACK_PATH = getattr(PLATFORM, "callback_route_path", "/auth/callback")
 AUTH_PROVIDER = getattr(PLATFORM, "auth_provider", "HuggingFace")
-RELAY_TOKEN = os.environ.get("SQUAD_RELAY_TOKEN", "").strip()
+# ── Relay token helpers ──────────────────────────────────────────
+_OAUTH_JSON_PATHS = [
+    "/mnt/workspace/instances/default/oauth.json",
+    "/mnt/workspace/oauth.json",
+    "/data/instances/default/oauth.json",
+    "/data/oauth.json",
+]
+
+
+def _read_relay_token() -> str:
+    """Read relay_token from oauth.json (primary) with env var fallback."""
+    for path in _OAUTH_JSON_PATHS:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                _t = data.get("relay_token", "")
+                if _t:
+                    return _t.strip()
+            except Exception:
+                continue
+    return os.environ.get("SQUAD_RELAY_TOKEN", "").strip()
+
+
+def _write_relay_token(token: str) -> bool:
+    """Write relay_token into the first existing oauth.json, preserving others."""
+    for path in _OAUTH_JSON_PATHS:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+            data["relay_token"] = token.strip() if token else ""
+            with open(path, "w") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.chmod(path, 0o600)
+            _log(f"relay_token written to {path}")
+            return True
+    return False
+
+
+RELAY_TOKEN = _read_relay_token()
 RELAY_TIMEOUT = int(os.environ.get("SQUAD_RELAY_TIMEOUT", "120"))
 _log(f"platform={PLATFORM.name}  upstream=:{NANOBOT_WS_PORT}  relay={'✓' if RELAY_TOKEN else '✗'}")
 
@@ -383,7 +425,16 @@ def _build_binding_content() -> str:
 
  Agent 生成的输出文件存放在此，可随时下载。
 
----
+ ---
+
+ # 🔗 Relay 调试
+
+ 跨空间 relay 调试工具，用于远程诊断与维修。
+ 状态：{'✅ 已配置' if RELAY_TOKEN else '⚠️ 未配置（需要在页面中设置 token 后方可使用）'}
+
+ 👉 [`/config/relay`](/config/relay)
+
+ ---
 
  # ⚙️ 系统重置
 
@@ -813,6 +864,81 @@ async def reset_setup(request: Request) -> JSONResponse:
         "kept": ["config.json 已保留（API Key / 模型配置不变）"],
         "hint": "重启空间进入 setup · OAuth 凭证需重新填写",
     })
+
+
+# ── Relay token config page ──────────────────────────────────────
+
+_RELAY_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relay Token 配置</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 640px;
+        margin: 40px auto; padding: 0 20px; line-height: 1.6; }}
+  h1 {{ font-size: 1.4em; }}
+  label {{ display: block; font-weight: 600; margin: 1em 0 .3em; }}
+  input[type="text"] {{ width: 100%; padding: 8px; font: inherit; box-sizing: border-box; }}
+  button {{ margin-top: 1em; padding: 8px 20px; font-size: 1em; cursor: pointer; }}
+  .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px;
+            font-size: .85em; font-weight: 600; }}
+  .ok {{ background: #d4edda; color: #155724; }}
+  .warn {{ background: #fff3cd; color: #856404; }}
+  pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+</style>
+</head>
+<body>
+<h1>🔗 Relay Token 配置</h1>
+<p><span class="badge {badge_cls}">{status}</span></p>
+<p>Relay token 用于跨空间调试与远程维修。修改后即时生效，无需重启。</p>
+<p>💡 <strong>环境变量兜底</strong>：当 WebUI 不可用时，可通过面板环境变量
+   <code>SQUAD_RELAY_TOKEN</code> 注入，优先级低于此页面配置。</p>
+<form method="post">
+  <label for="token">Relay Token</label>
+  <input type="text" id="token" name="token" value="{token_masked}"
+         placeholder="粘贴 relay token…">
+  <button type="submit">💾 保存</button>
+</form>
+<hr>
+<p><small>当前策略：oauth.json (<em>优先</em>) ← SQUAD_RELAY_TOKEN 环境变量（兜底）</small></p>
+<p><a href="/reset-setup">🔄 重置系统</a> · <a href="/">← 返回首页</a></p>
+</body>
+</html>"""
+
+
+async def relay_config(request: Request) -> Response:
+    """GET: show relay token config page.  POST: save token to oauth.json."""
+    if not request.session.get("user"):
+        return RedirectResponse(LOGIN_PATH, status_code=302)
+
+    if request.method == "POST":
+        body = await request.form()
+        token = body.get("token", "").strip()
+        _write_relay_token(token)
+        global RELAY_TOKEN
+        RELAY_TOKEN = token
+        _log(f"relay token updated via /config/relay (len={len(token)})")
+        # Re-render with updated status
+        return _render_relay_page(token)
+
+    # GET
+    return _render_relay_page(RELAY_TOKEN)
+
+
+def _render_relay_page(token: str) -> HTMLResponse:
+    if token:
+        masked = token[:4] + "***" + token[-4:] if len(token) > 8 else "***"
+        badge_cls = "ok"
+        status_text = "✅ 已配置"
+    else:
+        masked = ""
+        badge_cls = "warn"
+        status_text = "⚠️ 未配置"
+    html = _RELAY_PAGE.format(
+        badge_cls=badge_cls, status=status_text, token_masked=masked,
+    )
+    return HTMLResponse(html)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1335,6 +1461,7 @@ app.router.add_route("/auth/callback", callback, methods=["GET"])
 app.router.add_route("/login/callback", callback, methods=["GET"])
 app.router.add_route("/health", health, methods=["GET"])
 app.router.add_route("/reset-setup", reset_setup, methods=["GET"])
+app.router.add_route("/config/relay", relay_config, methods=["GET", "POST"])
 app.router.add_route("/api/squad/relay", squad_relay, methods=["POST"])
 
 # File manager — /files/…
