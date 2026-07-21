@@ -12,7 +12,6 @@ with routes at ``/api/squad/auth/*`` to avoid MS platform interception.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
@@ -24,7 +23,7 @@ from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
-from cloud_agent_gateway.platforms.modelscope import ModelScopeDatasetSyncMixin
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 logger = logging.getLogger("gatekeeper.modelscope")
 
@@ -41,10 +40,11 @@ def _get_oauth_client() -> OAuth:
     discovery causes nonce-validation failures on ModelScope.
     """
     oauth = OAuth()
+    client_id, client_secret = read_oauth_json()
     oauth.register(
         name="modelscope",
-        client_id=os.environ.get("OAUTH_CLIENT_ID", ""),
-        client_secret=os.environ.get("OAUTH_CLIENT_SECRET", ""),
+        client_id=client_id,
+        client_secret=client_secret,
         server_metadata_url=_MODELSCOPE_OIDC_CONFIG,
         client_kwargs={
             "scope": "profile",  # avoid 'openid' → no nonce
@@ -59,12 +59,10 @@ def _get_oauth_client() -> OAuth:
 # ═══════════════════════════════════════════════════════════════
 
 
-class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
+class ModelScopePlatform(PlatformProtocol):
     """Platform implementation for ModelScope Studio (Squad)."""
 
     name = "modelscope"
-    _dataset_repo = "Stone2006/nanobot-multi-agent-nightly-data"
-    _dataset_token_env = "NANOBOT_Staging_modelscope_TOKEN"
 
     def __init__(self):
         super().__init__()
@@ -85,7 +83,7 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
     ) -> None:
         """Load configuration — file-first (squad_config.json), env-fallback."""
         try:
-            from squad_config_loader import (
+            from nanobot_legion.squad_config_loader import (
                 get_commander_whitelist,
                 get_peers,
                 get_user_agent_map,
@@ -96,25 +94,9 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
             self._webui_agent = webui_agent or get_webui_agent()
             if squad_roster is None:
                 squad_roster = get_peers()
-        except ImportError:
-            logger.warning("squad_config_loader not available — falling back to env vars")
-            self._commander_whitelist = [
-                u.strip()
-                for u in os.environ.get("COMMANDER_WHITELIST", "").split(",")
-                if u.strip()
-            ]
-            # USER_AGENT_MAP: flat dict from env
-            self._user_agent_map = {}
-            raw = os.environ.get("USER_AGENT_MAP", "")
-            if raw:
-                try:
-                    self._user_agent_map = json.loads(raw)
-                except json.JSONDecodeError:
-                    for pair in raw.split(","):
-                        if ":" in pair:
-                            k, v = pair.split(":", 1)
-                            self._user_agent_map[k.strip()] = v.strip()
-            self._webui_agent = webui_agent or os.environ.get("WEBUI_AGENT", "neo")
+        except ImportError as e:
+            logger.error("squad_config_loader unavailable — cannot load squad config: %s", e)
+            raise
 
         self._squad_roster = squad_roster or {}
         logger.info(
@@ -194,8 +176,7 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
             logger.warning("No authorisation code in callback")
             return None
 
-        client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+        client_id, client_secret = read_oauth_json()
         redirect_uri = self._public_callback_url(request)
 
         async with httpx.AsyncClient(timeout=15) as client:
@@ -266,19 +247,15 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
         return self._user_agent_map
 
     def get_agent_for_user(self, username: str) -> str:
+        """Commander → WEBUI_AGENT; mapped user → their agent; unauthorised → ''."""
         if not username or username == "guest":
-            return self._webui_agent
+            return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        peer_key = self._user_agent_map.get(username, "")
-        if peer_key.startswith("NANOBOT_PEER_"):
-            agent = peer_key[len("NANOBOT_PEER_"):].lower()
-            if agent in self._squad_roster:
-                return agent
-            return self._webui_agent
-        if peer_key:
-            return peer_key
-        return self._webui_agent
+        agent = self._user_agent_map.get(username, "").lower()
+        if agent and agent in self._squad_roster:
+            return agent
+        return ""
 
     def is_commander(self, session_user: Any) -> bool:
         if session_user is None:
@@ -380,7 +357,7 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
         async def modelscope_login(request: Request):
             _ensure_webui()
             redirect_uri = platform._public_callback_url(request)
-            client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+            client_id, _ = read_oauth_json()
             auth_url = (
                 f"https://modelscope.cn/oauth/authorize"
                 f"?response_type=code"
@@ -452,16 +429,14 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
 
 
     # ═══════════════════════════════════════════════════════════════
-    # Entrypoint setup — env unfreeze, dataset pull, template copy
+    # Entrypoint setup — env unfreeze, relay token mapping
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
     def setup() -> str:
-        """MS-specific initialisation: unfreeze env, pull dataset, copy templates."""
+        """MS-specific initialisation: unfreeze env, map relay token."""
         import os as _os
         import sys as _sys
-        import shutil as _shutil
-        import subprocess as _sp
 
         def _log(msg: str) -> None:
             _sys.stderr.write(msg + "\n")
@@ -502,100 +477,6 @@ class ModelScopePlatform(ModelScopeDatasetSyncMixin, PlatformProtocol):
                 _os.environ["SQUAD_RELAY_TOKEN"] = tok
                 _log(f"   🔑 SQUAD_RELAY_TOKEN mapped from {ms_key}")
                 break
-
-        # 3. Pull dataset from ModelScope (always fresh — no cache fallback)
-        dataset_dir = "/tmp/nanobot-legion-instances"
-        if _os.path.isdir(dataset_dir):
-            _shutil.rmtree(dataset_dir)
-
-        ms_token = _os.environ.get("NANOBOT_Staging_modelscope_TOKEN", "")
-        if not ms_token:
-            try:
-                with open(proc_env, "rb") as f:
-                    for item in f.read().split(b"\0"):
-                        if b"NANOBOT_Staging_modelscope_TOKEN" in item:
-                            ms_token = item.decode("utf-8", errors="replace").split("=", 1)[1]
-                            break
-            except Exception:
-                pass
-        if not ms_token:
-            raise RuntimeError("❌ 缺少 MS Token，无法拉取数据集配置")
-
-        _log("🔄 [Dataset] 从私有数据集拉取实例模板...")
-        repo = "Stone2006/nanobot-multi-agent-nightly-data"
-        url = f"https://oauth2:{ms_token}@www.modelscope.cn/datasets/{repo}.git"
-        try:
-            _sp.run(["git", "clone", "--depth=1", url, dataset_dir],
-                    check=True, capture_output=True, timeout=60)
-        except Exception as exc:
-            raise RuntimeError(f"❌ 数据集拉取失败: {exc}") from exc
-
-        # 4. Copy template from dataset
-        mount_path = "/mnt/workspace"
-        instances_src = f"{dataset_dir}/instances"
-        if _os.path.isdir(f"{instances_src}/_template"):
-            _os.makedirs(f"{mount_path}/instances", exist_ok=True)
-            tmpl_dst = f"{mount_path}/instances/_template"
-            if _os.path.exists(tmpl_dst):
-                _shutil.rmtree(tmpl_dst)
-            _shutil.copytree(f"{instances_src}/_template", tmpl_dst)
-            _log("🔄 [Template] 模板已从私有数据集同步")
-        elif _os.path.isdir(f"{mount_path}/instances/_template"):
-            _log("ℹ️ [Template] 无数据集，使用持久化存储现有模板")
-        else:
-            _log("⚠️ [Template] 无模板可用 — agent 将跳过")
-
-        # 5. Deep-merge agent configs: dataset is authoritative, instances-only keys preserved.
-        #    This replaces the old "skip if exists" logic so that config updates in the dataset
-        #    (new channels, settings) propagate while per-agent credentials (token, app_id) survive.
-        def _deep_merge(base: dict, override: dict) -> dict:
-            """Merge override into base. Dataset (override) wins for scalars;
-            for nested dicts (e.g. channels), merge recursively; lists are replaced."""
-            for key, value in override.items():
-                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                    _deep_merge(base[key], value)
-                else:
-                    base[key] = value
-            return base
-
-        for item in _os.listdir(instances_src):
-            item_path = _os.path.join(instances_src, item)
-            cfg_file = _os.path.join(item_path, "config.json")
-            if _os.path.isdir(item_path) and item not in ("_template", ".git") and _os.path.isfile(cfg_file):
-                dst_dir = f"{mount_path}/instances/{item}"
-                dst_cfg = f"{dst_dir}/config.json"
-                _os.makedirs(dst_dir, exist_ok=True)
-                with open(cfg_file) as f:
-                    ds_cfg = json.load(f)
-                if _os.path.isfile(dst_cfg):
-                    with open(dst_cfg) as f:
-                        inst_cfg = json.load(f)
-                    merged = _deep_merge(inst_cfg, ds_cfg)
-                    with open(dst_cfg, "w") as f:
-                        json.dump(merged, f, indent=2, ensure_ascii=False)
-                    _log(f"🔄 [{item}] config.json merged (dataset → instances)")
-                else:
-                    _shutil.copy2(cfg_file, dst_cfg)
-                    _log(f"🔄 [{item}] config.json restored from dataset")
-
-        # 5b. Restore squad_config from dataset (sole source — no fallback)
-        squad_cfg_ds = f"{dataset_dir}/squad_config.ms-staging.json"
-        squad_cfg_persist = f"{mount_path}/squad_config.json"
-        if not _os.path.isfile(squad_cfg_ds):
-            raise RuntimeError(f"❌ 数据集中缺少 squad_config.ms-staging.json，无法启动")
-        _shutil.copy2(squad_cfg_ds, squad_cfg_persist)
-        _log("✅ [Config] squad_config 已从数据集同步")
-
-        # 6. Seed neo workspace from dataset
-        neo_ws = f"{mount_path}/instances/neo/workspace"
-        seed_flag = f"{neo_ws}/.legion_seeded"
-        neo_ws_src = f"{instances_src}/neo/workspace"
-        if _os.path.isdir(neo_ws_src) and not _os.path.exists(seed_flag):
-            _os.makedirs(neo_ws, exist_ok=True)
-            _shutil.copytree(neo_ws_src, neo_ws, dirs_exist_ok=True)
-            with open(seed_flag, "w") as f:
-                f.write("seeded")
-            _log("🧠 [neo] 军团知识已注入")
 
         return "\n".join(exports)
 

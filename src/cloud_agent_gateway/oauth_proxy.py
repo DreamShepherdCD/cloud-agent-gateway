@@ -46,7 +46,9 @@ if _cloud_dir not in sys.path:
     sys.path.insert(0, _cloud_dir)
 
 from cloud_agent_gateway.platforms import platform as _platform
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 from cloud_agent_gateway.channel_binding import bind_status, discover
+from cloud_agent_gateway.package_source import get_package_source, build_source_link
 from cloud_agent_gateway import file_manager
 
 # Discover channel bindings at module load (triggers import of deploy-layer modules)
@@ -70,7 +72,49 @@ LOGIN_PATH = getattr(PLATFORM, "login_route_path", "/login")
 LOGIN_START_PATH = "/auth/start"
 CALLBACK_PATH = getattr(PLATFORM, "callback_route_path", "/auth/callback")
 AUTH_PROVIDER = getattr(PLATFORM, "auth_provider", "HuggingFace")
-RELAY_TOKEN = os.environ.get("SQUAD_RELAY_TOKEN", "").strip()
+# ── Relay token helpers ──────────────────────────────────────────
+_OAUTH_JSON_PATHS = [
+    "/mnt/workspace/instances/default/oauth.json",
+    "/mnt/workspace/oauth.json",
+    "/data/instances/default/oauth.json",
+    "/data/oauth.json",
+]
+
+
+def _read_relay_token() -> str:
+    """Read relay_token from oauth.json (primary) with env var fallback."""
+    for path in _OAUTH_JSON_PATHS:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                _t = data.get("relay_token", "")
+                if _t:
+                    return _t.strip()
+            except Exception:
+                continue
+    return os.environ.get("SQUAD_RELAY_TOKEN", "").strip()
+
+
+def _write_relay_token(token: str) -> bool:
+    """Write relay_token into the first existing oauth.json, preserving others."""
+    for path in _OAUTH_JSON_PATHS:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+            data["relay_token"] = token.strip() if token else ""
+            with open(path, "w") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.chmod(path, 0o600)
+            _log(f"relay_token written to {path}")
+            return True
+    return False
+
+
+RELAY_TOKEN = _read_relay_token()
 RELAY_TIMEOUT = int(os.environ.get("SQUAD_RELAY_TIMEOUT", "120"))
 _log(f"platform={PLATFORM.name}  upstream=:{NANOBOT_WS_PORT}  relay={'✓' if RELAY_TOKEN else '✗'}")
 
@@ -213,8 +257,7 @@ p { color:#999; margin-bottom:2rem; font-size:0.95rem; }
 _AUTH_FREE = {LOGIN_PATH, LOGIN_START_PATH, CALLBACK_PATH,
               "/auth/callback", "/login/callback",
               "/health", "/-/health",
-              "/api/squad/relay",
-              "/reset-setup"}
+              "/api/squad/relay"}
 for _b in _bindings:
     _AUTH_FREE.add(f"/bind/{_b.name}")
     for _path_suffix, _method, _handler in _b.public_routes:
@@ -335,7 +378,7 @@ async def login_start(request: Request) -> RedirectResponse:
 
     params = {
         "response_type": "code",
-        "client_id": os.environ.get("OAUTH_CLIENT_ID", ""),
+        "client_id": read_oauth_json()[0],
         "redirect_uri": redirect_uri,
         "scope": scope,
         "state": state,
@@ -351,71 +394,15 @@ _rows = "\n".join(
     f"| {b.icon} {b.display} | [绑定{b.display}](/bind/{b.name}) |"
     for b in _bindings
 )
-def _get_package_source(pkg_name: str) -> dict | None:
-    """Read pip direct_url.json for git-installed package → {repo, revision, commit, url}."""
-    try:
-        from importlib.metadata import distribution, PackageNotFoundError
-        dist = distribution(pkg_name)
-    except Exception:
-        return None
-    direct_url = dist._path / "direct_url.json"
-    if not direct_url.is_file():
-        return None
-    try:
-        import json
-        info = json.loads(direct_url.read_text())
-    except Exception:
-        return None
-    url = info.get("url", "")
-    repo = ""
-    if "github.com/" in url:
-        repo = url.split("github.com/")[-1].replace(".git", "")
-    revision = ""
-    commit = ""
-    vcs = info.get("vcs_info", {})
-    if isinstance(vcs, dict):
-        revision = vcs.get("requested_revision", "")
-        commit = vcs.get("commit_id", "")
-    return {"repo": repo, "revision": revision, "commit": commit, "url": url}
-
-
-def _build_source_link(info: dict | None, default_repo: str, default_branch: str = "") -> str:
-    """Build a GitHub markdown link from package source info, with fallback."""
-    if info and info.get("repo"):
-        repo = info["repo"]
-        rev = info.get("revision", "")
-        commit_short = info.get("commit", "")[:7] if info.get("commit") else ""
-
-        if rev.startswith("v"):
-            display = f"{repo} @{rev}"
-            href = f"https://github.com/{repo}/tree/{rev}"
-        elif rev and len(rev) >= 7:
-            display = f"{repo} @{rev[:7]}"
-            href = f"https://github.com/{repo}/commit/{commit_short or rev[:7]}"
-        elif commit_short:
-            display = f"{repo} @{commit_short}"
-            href = f"https://github.com/{repo}/commit/{commit_short}"
-        else:
-            display = repo
-            href = f"https://github.com/{repo}"
-    else:
-        repo = default_repo
-        display = repo
-        if default_branch:
-            href = f"https://github.com/{repo}/tree/{default_branch}"
-        else:
-            href = f"https://github.com/{repo}"
-
-    return f"[{display}]({href})"
-
-
 def _build_binding_content() -> str:
     """Build the binding chat markdown with dynamic source links."""
-    cag_info = _get_package_source("cloud-agent-gateway")
-    nanobot_info = _get_package_source("nanobot-ai")
+    cag_info = get_package_source("cloud-agent-gateway")
+    nanobot_info = get_package_source("nanobot-ai")
+    nanobot_legion_info = get_package_source("nanobot-legion")
 
-    cag_link = _build_source_link(cag_info, "DreamShepherd2006/cloud-agent-gateway")
-    nanobot_link = _build_source_link(nanobot_info, "DreamShepherd2006/nanobot", "nightly")
+    cag_link = build_source_link(cag_info, "DreamShepherd2006/cloud-agent-gateway")
+    nanobot_link = build_source_link(nanobot_info, "DreamShepherd2006/nanobot", "nightly")
+    nanobot_legion_link = build_source_link(nanobot_legion_info, "DreamShepherd2006/nanobot-legion")
 
     return f"""\
 # 📱 社交通道配置
@@ -428,17 +415,26 @@ def _build_binding_content() -> str:
 
 👆 点击上方链接即可操作，无需在此聊天。
 
----
+ ---
 
- # 📁 文件管理
+  # 📁 文件管理
 
-上传、下载、管理你的文件（PPTX、视频、文档等）：
+ 上传、下载、管理你的文件（PPTX、视频、文档等）：
 
-👉 [`/files`](/files)
+ 👉 [`/files`](/files)
 
-Agent 生成的输出文件存放在此，可随时下载。
+ Agent 生成的输出文件存放在此，可随时下载。
 
----
+ ---
+
+ # 🔗 Relay 调试
+
+ 跨空间 relay 调试工具，用于远程诊断与维修。
+ 状态：{'✅ 已配置' if RELAY_TOKEN else '⚠️ 未配置（需要在页面中设置 token 后方可使用）'}
+
+ 👉 [`/config/relay`](/config/relay)
+
+ ---
 
  # ⚙️ 系统重置
 
@@ -457,6 +453,7 @@ Agent 生成的输出文件存放在此，可随时下载。
 | 组件 | 源码 |
 |------|------|
 | cloud-agent-gateway（框架层） | {cag_link} |
+| nanobot-legion（部署层） | {nanobot_legion_link} |
 | nanobot（AI 引擎） | {nanobot_link} |
 
 🧭 点击上方链接浏览完整代码，仓库中的 Dockerfile 可用于部署新空间。
@@ -464,8 +461,15 @@ Agent 生成的输出文件存放在此，可随时下载。
 """
 
 
+# Cached binding chat ID — set once by _ensure_binding_session, used by WS filter
+_binding_chat_cid: str | None = None
+
+
 def _get_binding_chat_id() -> str | None:
-    """Return the binding chat ID from sidebar-state, or None."""
+    """Return the binding chat ID from cache, or fall back to sidebar-state."""
+    global _binding_chat_cid
+    if _binding_chat_cid:
+        return _binding_chat_cid
     from cloud_agent_gateway.platforms import platform
     _agent = "default"
     _state = platform.read_sidebar_state(_agent)
@@ -475,6 +479,7 @@ def _get_binding_chat_id() -> str | None:
         _cid = _pk.split(":", 1)[1]
         _lines = platform.read_session(_agent, _cid)
         if _lines and _lines[0].get("metadata", {}).get("title") == BINDING_CHAT_TITLE:
+            _binding_chat_cid = _cid
             return _cid
     return None
 
@@ -483,17 +488,30 @@ def _ensure_binding_session():
     """Pre-create the binding chat session + pin so sidebar shows it on first load.
 
     Called from OAuth callback (before the page loads) and from setup_title()
-    (after WebSocket connects). Idempotent — only creates if no pinned binding
-    chat exists.
+    (after WebSocket connects). Idempotent — only creates if no valid pinned
+    binding chat exists or content has changed.
     """
+    global _binding_chat_cid
+
     import uuid as _uuid, time as _time
     from cloud_agent_gateway.platforms import platform
     _agent = "default"
     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
+    # Check if cached session is still valid (pinned + content unchanged)
+    _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
+    if _binding_chat_cid:
+        _expected_key = f"websocket:{_binding_chat_cid}"
+        _state = platform.read_sidebar_state(_agent)
+        if _expected_key in _state.get("pinned_keys", []):
+            _lines = platform.read_session(_agent, _binding_chat_cid)
+            if _lines:
+                _existing_content = _lines[1].get("content", "") if len(_lines) > 1 else ""
+                if _existing_content == _build_binding_content():
+                    return  # Already up to date — no-op
+
     # Clean up ALL stale binding sessions — detect by matching title against
     # both current BINDING_CHAT_TITLE and known historical titles.
-    _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
     _state = platform.read_sidebar_state(_agent)
     _any_deleted = False
     for _pk in list(_state.get("pinned_keys", [])):
@@ -551,6 +569,9 @@ def _ensure_binding_session():
     _sidebar_state.setdefault("schema_version", 1)
     platform.write_sidebar_state(_agent, _sidebar_state)
 
+    # Cache for WS filter (avoid re-reading sidebar on every message)
+    _binding_chat_cid = _cid
+
     _log(f"pre-created binding session + pin (cid={_cid[:12]})")
 
 
@@ -560,6 +581,8 @@ def _clear_binding_session(data_root_override: str | None = None) -> None:
     Used by /reset-setup to clear stale system config content without touching
     config.json. Re-created on next OAuth login via _ensure_binding_session().
     """
+    global _binding_chat_cid
+    _binding_chat_cid = None  # Invalidate cache
     from cloud_agent_gateway.platforms import platform
     _LEGACY_BINDING_TITLES = ["社交通道配置提示"]
     _agent = "default"
@@ -813,6 +836,8 @@ async def reset_setup(request: Request) -> JSONResponse:
     After calling this, the user should manually restart the space to enter
     Phase 1 setup. The preserved config.json will be used to pre-fill the form.
     """
+    if not request.session.get("user"):
+        return JSONResponse({"ok": False, "error": "请先登录"}, status_code=401)
     deleted = []
     errors = []
 
@@ -839,6 +864,81 @@ async def reset_setup(request: Request) -> JSONResponse:
         "kept": ["config.json 已保留（API Key / 模型配置不变）"],
         "hint": "重启空间进入 setup · OAuth 凭证需重新填写",
     })
+
+
+# ── Relay token config page ──────────────────────────────────────
+
+_RELAY_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relay Token 配置</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 640px;
+        margin: 40px auto; padding: 0 20px; line-height: 1.6; }}
+  h1 {{ font-size: 1.4em; }}
+  label {{ display: block; font-weight: 600; margin: 1em 0 .3em; }}
+  input[type="text"] {{ width: 100%; padding: 8px; font: inherit; box-sizing: border-box; }}
+  button {{ margin-top: 1em; padding: 8px 20px; font-size: 1em; cursor: pointer; }}
+  .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px;
+            font-size: .85em; font-weight: 600; }}
+  .ok {{ background: #d4edda; color: #155724; }}
+  .warn {{ background: #fff3cd; color: #856404; }}
+  pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+</style>
+</head>
+<body>
+<h1>🔗 Relay Token 配置</h1>
+<p><span class="badge {badge_cls}">{status}</span></p>
+<p>Relay token 用于跨空间调试与远程维修。修改后即时生效，无需重启。</p>
+<p>💡 <strong>环境变量兜底</strong>：当 WebUI 不可用时，可通过面板环境变量
+   <code>SQUAD_RELAY_TOKEN</code> 注入，优先级低于此页面配置。</p>
+<form method="post">
+  <label for="token">Relay Token</label>
+  <input type="text" id="token" name="token" value="{token_masked}"
+         placeholder="粘贴 relay token…">
+  <button type="submit">💾 保存</button>
+</form>
+<hr>
+<p><small>当前策略：oauth.json (<em>优先</em>) ← SQUAD_RELAY_TOKEN 环境变量（兜底）</small></p>
+<p><a href="/reset-setup">🔄 重置系统</a> · <a href="/">← 返回首页</a></p>
+</body>
+</html>"""
+
+
+async def relay_config(request: Request) -> Response:
+    """GET: show relay token config page.  POST: save token to oauth.json."""
+    if not request.session.get("user"):
+        return RedirectResponse(LOGIN_PATH, status_code=302)
+
+    if request.method == "POST":
+        body = await request.form()
+        token = body.get("token", "").strip()
+        _write_relay_token(token)
+        global RELAY_TOKEN
+        RELAY_TOKEN = token
+        _log(f"relay token updated via /config/relay (len={len(token)})")
+        # Re-render with updated status
+        return _render_relay_page(token)
+
+    # GET
+    return _render_relay_page(RELAY_TOKEN)
+
+
+def _render_relay_page(token: str) -> HTMLResponse:
+    if token:
+        masked = token[:4] + "***" + token[-4:] if len(token) > 8 else "***"
+        badge_cls = "ok"
+        status_text = "✅ 已配置"
+    else:
+        masked = ""
+        badge_cls = "warn"
+        status_text = "⚠️ 未配置"
+    html = _RELAY_PAGE.format(
+        badge_cls=badge_cls, status=status_text, token_masked=masked,
+    )
+    return HTMLResponse(html)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1145,13 +1245,21 @@ async def ws_proxy(websocket: WebSocket) -> None:
                         break
 
             async def setup_title():
-                """Ensure a '系统配置' chat exists, is correctly titled, and pinned."""
+                """Ensure a '系统配置' chat exists, is correctly titled, and pinned.
+
+                Refreshes the binding session content on every startup so that
+                additions to BINDING_CHAT_CONTENT (e.g. new agent management
+                links) appear without requiring a full /reset-setup cycle.
+                """
                 nonlocal current_chat_id
                 _log(f"WS setup_title: started (username={username})")
                 try:
                     import time as _time
                     from cloud_agent_gateway.platforms import platform
                     _agent = "default"
+
+                    # Always refresh binding session — updates pinned content if changed
+                    _ensure_binding_session()
                     _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
                     # ── Step 0: check for an existing pinned binding chat ──
@@ -1353,6 +1461,7 @@ app.router.add_route("/auth/callback", callback, methods=["GET"])
 app.router.add_route("/login/callback", callback, methods=["GET"])
 app.router.add_route("/health", health, methods=["GET"])
 app.router.add_route("/reset-setup", reset_setup, methods=["GET"])
+app.router.add_route("/config/relay", relay_config, methods=["GET", "POST"])
 app.router.add_route("/api/squad/relay", squad_relay, methods=["POST"])
 
 # File manager — /files/…

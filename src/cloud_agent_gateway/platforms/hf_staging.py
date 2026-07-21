@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from authlib.integrations.starlette_client import OAuth
 
 from cloud_agent_gateway.platforms.base import CloudPlatformProtocol as PlatformProtocol
+from cloud_agent_gateway.platforms._credentials import read_oauth_json
 
 # ── Local logging (mirrors gatekeeper for now — will deduplicate later) ──
 def _log(msg: str) -> None:
@@ -84,7 +85,7 @@ class HFStagingPlatform(PlatformProtocol):
         if squad_roster is not None:
             self._squad_roster = squad_roster
 
-        from squad_config_loader import get_commander_whitelist, get_user_agent_map
+        from nanobot_legion.squad_config_loader import get_commander_whitelist, get_user_agent_map
         self._commander_whitelist = get_commander_whitelist()
         self._user_agent_map = get_user_agent_map()
 
@@ -95,8 +96,7 @@ class HFStagingPlatform(PlatformProtocol):
     def register_oauth(self) -> OAuth:
         starlette_config = StarletteConfig(environ=os.environ)
         self._oauth = OAuth(starlette_config)
-        cid = os.environ.get("OAUTH_CLIENT_ID", "MISSING")
-        cs = os.environ.get("OAUTH_CLIENT_SECRET")
+        cid, cs = read_oauth_json()
         _log(f"🔑 OAuth CLIENT_ID prefix: {cid[:4]}... (len={len(cid)}), SECRET={'SET' if cs else 'MISSING'}")
         try:
             self._oauth.register(
@@ -134,8 +134,7 @@ class HFStagingPlatform(PlatformProtocol):
             _log("⚠️ No authorisation code in callback")
             return None
 
-        client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+        client_id, client_secret = read_oauth_json()
         redirect_uri = str(request.url_for("auth")).replace("http://", "https://")
 
         async with httpx.AsyncClient(timeout=15) as http:
@@ -189,18 +188,16 @@ class HFStagingPlatform(PlatformProtocol):
 
         Commander → WEBUI_AGENT
         Mapped user  → their assigned agent (via USER_AGENT_MAP)
-        Everyone else → WEBUI_AGENT (fallback)
+        Unauthorised  → "" (caller must reject)
         """
         if not username or username == "Unknown":
-            return self._webui_agent
+            return ""
         if username in self._commander_whitelist:
             return self._webui_agent
-        peer_key = self._user_agent_map.get(username, "")
-        if peer_key and peer_key.startswith("NANOBOT_PEER_"):
-            agent_name = peer_key[len("NANOBOT_PEER_"):].lower()
-            if agent_name in self._squad_roster:
-                return agent_name
-        return self._webui_agent
+        agent = self._user_agent_map.get(username, "").lower()
+        if agent and agent in self._squad_roster:
+            return agent
+        return ""
 
     def is_commander(self, session_user) -> bool:
         if not session_user:
@@ -221,12 +218,11 @@ class HFStagingPlatform(PlatformProtocol):
         Member → allowed only if target is their own mapped agent.
         """
         effective = sender.lower()
-        # Reverse lookup: agent alias → username
+        # Reverse lookup: agent name → username
         agent_to_user: dict[str, str] = {}
-        for uname, peer_key in self._user_agent_map.items():
-            if isinstance(peer_key, str) and peer_key.upper().startswith("NANOBOT_PEER_"):
-                aname = peer_key[len("NANOBOT_PEER_"):].lower()
-                agent_to_user[aname] = uname.lower()
+        for uname, agent in self._user_agent_map.items():
+            if isinstance(agent, str):
+                agent_to_user[agent.lower()] = uname.lower()
         if effective in agent_to_user:
             effective = agent_to_user[effective]
 
@@ -235,9 +231,9 @@ class HFStagingPlatform(PlatformProtocol):
             return True
 
         if effective in self._user_agent_map:
-            peer_key = self._user_agent_map[effective]
-            if isinstance(peer_key, str) and peer_key.upper().startswith("NANOBOT_PEER_"):
-                return peer_key[len("NANOBOT_PEER_"):].lower() == target
+            agent = self._user_agent_map.get(effective)
+            if isinstance(agent, str):
+                return agent.lower() == target.lower()
         return False
 
     # ═══════════════════════════════════════════════════════════
@@ -274,7 +270,7 @@ class HFStagingPlatform(PlatformProtocol):
         async def login(request: Request):
             request.session.clear()
             redirect_uri = str(request.url_for("auth")).replace("http://", "https://")
-            client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+            client_id, _ = read_oauth_json()
             state = secrets.token_urlsafe(32)
             request.session["oauth_state"] = state
             auth_url = (
